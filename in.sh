@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 echo -e "\nInstalling essential packages..."
-pkg install git gnupg gum -y
+pkg install git age gum -y
 
 gum spin --spinner dot --spinner.foreground 81 --title "Cloning nix repo..." --title.foreground 254 -- sleep 1
 
