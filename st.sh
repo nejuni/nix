@@ -8,6 +8,7 @@ export NIX_INSTALL="$NIX_PATH/install"
 
 # Source function
 source "$NIX_INSTALL/fu.sh"
+cd $NIX_PATH
 
 if cf "Have decryption Key?"; then
     gpg -d -o enc.tar enc.tar.gpg
