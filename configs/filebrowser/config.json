@@ -1,0 +1,8 @@
+{
+  "port": 8080,
+  "baseURL": "/",
+  "log": "stdout",
+  "root": "/storage/emulated/0/",
+  "database": "/data/data/com.termux/files/home/.config/filebrowser/filebrowser.db",
+  "address": "192.168.29.55"
+}

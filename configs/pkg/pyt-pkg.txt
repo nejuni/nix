@@ -1,0 +1,4 @@
+trash-cli
+tldr
+yt-dlp
+pyftpdlib

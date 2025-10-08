@@ -1,0 +1,46 @@
+# Eza file listing (modern ls replacement)
+alias la='eza -Alh --icons'
+alias ls='eza -a -F -h --icons --color=always'
+alias lt='eza --tree --icons -a'
+alias cl='clear'
+
+# System management
+alias tm='tmux'
+alias tma='tmux attach'
+alias ex='exit'
+alias kl='pkill -9 -u $(whoami)'
+alias cle='apt autoremove -y && apt clean'
+alias upd='pkg update && pkg upgrade -y'
+alias pkgs='apt-mark showmanual'
+alias ba='termux-backup /storage/emulated/0/01/nix/snap/termux-pkg.tar && tar -cf /storage/emulated/0/01/nix/snap/termux-backup.tar -C /data/data/com.termux/files ./home'
+
+# YouTube operations
+alias ytc='mv /storage/emulated/0/Download/cookies.txt ~/'
+alias ytup='pip install -U yt-dlp'
+
+# file browser file share on local ip
+alias fibr='filebrowser -d ~/.config/filebrowser/filebrowser.db --noauth -r /storage/emulated/0/ -a 0.0.0.0 -p 8080'
+
+# python http server file share
+alias pyht='cd /storage/emulated/0 && python3 -m http.server 8080'
+
+# python pyftpdlib ftp file share -d for dir like -d /storage/emulated/0/
+
+alias pyftp='python -m pyftpdlib -p 8080 -w -d'
+
+# Trash-cli dir cd .local/share/Trash/files/
+
+alias tr='trash-put'
+alias tre='trash-empty --trash-dir $HOME/.local/share/Trash'
+alias trl='trash-list --trash-dir $HOME/.local/share/Trash'
+alias trb='trash-restore --trash-dir $HOME/.local/share/Trash'
+
+#stow verbose check 
+alias cst='stow -nvSt'
+alias ust='stow -nvDt'
+alias ast='stow -vSt'
+alias rst='stow -vDt'
+
+# fuzzy find files with names without searching contents in them with rg
+
+alias ff='rg --files --hidden --glob "!.git" | fzf --preview "bat --style=numbers --color=always {}" --bind "tab:toggle-preview" --bind "ctrl-f:change-preview-window(right:90%|right:50%)" --preview-window "right:50%:wrap" | xargs -r $EDITOR'

@@ -1,0 +1,295 @@
+ 
+#fzf functions
+
+# fuzzy find history execute with enter edit with tab
+
+if command -v fzf >/dev/null 2>&1; then
+  fh() {
+    local selected
+    # Search history with fzf, newest first
+    # Remove duplicate commands and line numbers
+    selected=$(history | sort -r | awk '{$1=""; print substr($0,2)}' | awk '!seen[$0]++' | fzf --no-sort \
+      --expect=tab \
+      --prompt='History> ' \
+      --height=100% \
+      --preview='echo {}' \
+      --preview-window=down:3:wrap)
+    
+    if [[ -n "$selected" ]]; then
+      # Extract the key and command
+      local key=$(echo "$selected" | head -1)
+      local cmd=$(echo "$selected" | tail -1)
+      
+      if [[ "$key" == "tab" ]]; then
+        # Print to command line for editing
+        # Use read with pre-filled input for bash
+        read -e -i "$cmd" -p "> " edited_cmd
+        if [[ -n "$edited_cmd" ]]; then
+          eval "$edited_cmd"
+        fi
+      else
+        # Print and execute the command
+        echo "$cmd"
+        eval "$cmd"
+      fi
+    fi
+  }
+fi
+
+# fuzzy change to dir with fd
+
+fcd() {
+  local dir
+  dir=$(fd --type d --hidden --exclude .git | fzf --preview 'ls -la --color=always {}' --bind "tab:toggle-preview" --bind "ctrl-f:change-preview-window(right:90%|right:50%)" --preview-window 'right:50%') && cd "$dir"
+}
+
+# fuzzy find live grep with preview - search file contents interactively
+
+frg() {
+  rg --color=always --line-number --no-heading --smart-case "${*:-}" |
+    fzf --ansi \
+      --color "hl:-1:underline,hl+:-1:underline:reverse" \
+      --delimiter : \
+      --preview 'bat --color=always {1} --highlight-line {2}' \
+      --preview-window 'right:60%:+{2}+3/3:~3' \
+      --bind 'tab:toggle-preview' \
+      --bind 'ctrl-f:change-preview-window(right:90%|right:60%)' \
+      --bind 'enter:become($EDITOR +{2} {1})'
+}
+
+# Fuzzy find Environment variable browser
+
+fenv() {
+  env | fzf --preview 'echo {}' --bind "tab:toggle-preview" --bind "ctrl-f:change-preview-window(down:90%|down:20%)" --preview-window down:20% | cut -d= -f1 | xargs -I {} sh -c 'echo {}; echo ${{}}'
+}
+
+# Fuzzy find search termux pkg
+
+spk() {
+  local packages
+  packages=$(apt-cache search . | fzf --multi \
+    --preview 'apt-cache show {1}' \
+    --bind "alt-t:toggle-preview" \
+    --bind "ctrl-f:change-preview-window(down:90%|down:60%)" \
+    --preview-window 'down:60%' \
+    --header='Select packages to INSTALL (Tab to select/deselect, Alt-T to toggle preview)' | awk '{print $1}')
+  if [ -n "$packages" ]; then
+    echo "Selected packages:"
+    echo "$packages"
+    read -p "Install these packages? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      echo "$packages" | xargs -r pkg install -y
+    else
+      echo "Installation canceled."
+    fi
+  else
+    echo "No packages selected."
+  fi
+}
+
+# Extract any archive
+extract() {
+    for archive in "$@"; do
+        if [ -f "$archive" ]; then
+            case $archive in
+                *.tar.bz2) tar xvjf "$archive" ;;
+                *.tar.gz) tar xvzf "$archive" ;;
+                *.bz2) bunzip2 "$archive" ;;
+                *.rar) unrar x "$archive" ;;
+                *.gz) gunzip "$archive" ;;
+                *.tar) tar xvf "$archive" ;;
+                *.tbz2) tar xvjf "$archive" ;;
+                *.tgz) tar xvzf "$archive" ;;
+                *.zip) unzip "$archive" ;;
+                *.Z) uncompress "$archive" ;;
+                *.7z) 7z x "$archive" ;;
+                *) echo "don't know how to extract '$archive'..." ;;
+            esac
+        else
+            echo "'$archive' is not a valid file!"
+        fi
+    done
+}
+
+
+# Git shortcuts
+gco() {
+    git add .
+    git commit -m "$1"
+}
+
+lgi() {
+    git add .
+    git commit -m "$1"
+    git push
+}
+
+# YouTube video downloader with cookies
+ytv() {
+    local url="$1"
+    if [ -z "$url" ]; then
+        echo "Usage: ytv <YouTube-URL>"
+        return 1
+    fi
+    
+    local cookies_file="$HOME/cookies.txt"
+    local cookies_option=""
+    if [ -f "$cookies_file" ]; then
+        cookies_option="--cookies $cookies_file"
+        echo "Using cookies from: $cookies_file"
+    else
+        echo "Warning: Cookies file not found"
+    fi
+    
+    echo "Fetching formats for: $url"
+    yt-dlp $cookies_option -F "$url"
+    echo -n "Enter format code (e.g. 251+616): "
+    read format
+    
+    if yt-dlp $cookies_option --write-subs --sub-langs en --skip-download --simulate "$url" >/dev/null 2>&1; then
+        echo "Downloading with subtitles..."
+        yt-dlp $cookies_option -f "$format" --write-subs --sub-langs en \
+            -o "/storage/emulated/0/Download/%(title)s.%(ext)s" "$url"
+    else
+        echo "Downloading without subtitles..."
+        yt-dlp $cookies_option -f "$format" \
+            -o "/storage/emulated/0/Download/%(title)s.%(ext)s" "$url"
+    fi
+}
+
+# YouTube downloader without cookies
+yt() {
+    local url="$1"
+    if [ -z "$url" ]; then
+        echo "Usage: yt <YouTube-URL>"
+        return 1
+    fi
+    
+    echo "Fetching formats for: $url"
+    yt-dlp -F "$url"
+    echo -n "Enter format code: "
+    read format
+    
+    if yt-dlp --write-subs --sub-langs en --skip-download --simulate "$url" >/dev/null 2>&1; then
+        echo "Downloading with subtitles..."
+        yt-dlp -f "$format" --write-subs --sub-langs en \
+            -o "/storage/emulated/0/Download/%(title)s.%(ext)s" "$url"
+    else
+        echo "Downloading without subtitles..."
+        yt-dlp -f "$format" \
+            -o "/storage/emulated/0/Download/%(title)s.%(ext)s" "$url"
+    fi
+}
+
+
+# File organizer (using ripgrep)
+so() {
+    # Configuration
+    SRC_DIR="/storage/emulated/0"
+    DEST_BASE="/storage/emulated/0/0a"
+    LOG_DIR="/storage/emulated/0/0l"
+    PHOTO_DIR="$DEST_BASE/pho"
+    VIDEO_DIR="$DEST_BASE/vid"
+    APK_DIR="$DEST_BASE/apk"
+    AUDIO_DIR="$DEST_BASE/mus"
+    DOC_DIR="$DEST_BASE/doc"
+    
+    # File type definitions
+    PHOTO_EXT=("jpg" "jpeg" "png" "gif" "bmp" "webp" "heic" "tiff")
+    VIDEO_EXT=("mp4" "mkv" "mov" "avi" "flv" "webm" "wmv" "3gp")
+    APK_EXT=("apk" "apkm" "xapk")
+    AUDIO_EXT=("mp3" "wav" "flac" "ogg" "opus" "m4a" "aac" "wma")
+    DOC_EXT=("html" "pdf" "doc" "docx" "epub" "odt" "rtf" "pages")
+    
+    # Create directories
+    mkdir -p "$PHOTO_DIR" "$VIDEO_DIR" "$APK_DIR" "$AUDIO_DIR" "$LOG_DIR" "$DOC_DIR"
+    
+    # Initialize logs
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    LOG_FILE="$LOG_DIR/organize_$TIMESTAMP.log"
+    JSON_LOG="$LOG_DIR/organize_$TIMESTAMP.json"
+    SKIPPED_LOG="$LOG_DIR/skipped_$TIMESTAMP.log"
+    
+    echo '{"actions": [], "skipped": []}' > "$JSON_LOG"
+    touch "$SKIPPED_LOG"
+    
+    # Count files for progress
+    echo "Counting files..."
+    RG_CMD="rg --files \"$SRC_DIR/\""
+    for ext in "${PHOTO_EXT[@]}" "${VIDEO_EXT[@]}" "${AUDIO_EXT[@]}" "${APK_EXT[@]}" "${DOC_EXT[@]}"; do
+        RG_CMD+=" --iglob '*.$ext'"
+    done
+    RG_CMD+=" --glob '!Android/data/**' --glob '!Android/obb/**'"
+    
+    TOTAL_FILES=$(eval "$RG_CMD" | wc -l)
+    echo "Found $TOTAL_FILES files to process"
+    PROCESSED=0
+    MOVED=0
+    SKIPPED=0
+    
+    # Process files
+    eval "$RG_CMD" | while IFS= read -r file; do
+        filename=$(basename "$file")
+        extension="${filename##*.}"
+        
+        case "${extension,,}" in
+            "${PHOTO_EXT[@]}") process_file "$file" "$PHOTO_DIR" ;;
+            "${VIDEO_EXT[@]}") process_file "$file" "$VIDEO_DIR" ;;
+            "${APK_EXT[@]}") process_file "$file" "$APK_DIR" ;;
+            "${AUDIO_EXT[@]}") process_file "$file" "$AUDIO_DIR" ;;
+            "${DOC_EXT[@]}") process_file "$file" "$DOC_DIR" ;;
+        esac
+    done
+    
+    # Finalize logs
+    echo -e "\nFile organization complete! Moved $MOVED files, skipped $SKIPPED duplicates."
+    echo "Logs saved to: $LOG_DIR"
+}
+
+# Helper function for file organizer
+process_file() {
+    local file="$1"
+    local dest_dir="$2"
+    local filename=$(basename "$file")
+    local dest_file="$dest_dir/$filename"
+    
+    if [ -f "$dest_file" ]; then
+        echo "$(date): SKIPPED (duplicate) - $file -> $dest_file" >> "$LOG_FILE"
+        echo "$file -> $dest_file" >> "$SKIPPED_LOG"
+        ((SKIPPED++))
+    else
+        if mv -n "$file" "$dest_dir/"; then
+            echo "$(date): MOVED - $file -> $dest_file" >> "$LOG_FILE"
+            ((MOVED++))
+        else
+            echo "$(date): ERROR - Failed to move $file" >> "$LOG_FILE"
+        fi
+    fi
+    
+    ((PROCESSED++))
+    echo -ne "Progress: $MOVED moved, $SKIPPED skipped, $TOTAL_FILES total ($((PROCESSED*100/TOTAL_FILES))%)\r"
+}
+
+# Paste to haste bin
+hb() {
+    if [ $# -eq 0 ]; then
+        echo "No file path specified."
+        return
+    elif [ ! -f "$1" ]; then
+        echo "File path does not exist."
+        return
+    fi
+
+    uri="http://bin.christitus.com/documents"
+    response=$(curl -s -X POST -d "$(cat "$1")" "$uri")
+
+    if [ $? -eq 0 ]; then
+        hasteKey=$(echo "$response" | jq -r '.key')
+        echo "http://bin.christitus.com/$hasteKey"
+    else
+        echo "Failed to upload the document."
+    fi
+}
+
+

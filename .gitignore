@@ -1,0 +1,9 @@
+# have all config files
+enc/
+
+# for backing up important files
+bac/
+
+# additional versioning of .tar files
+enc.tar
+

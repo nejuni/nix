@@ -1,0 +1,139 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+# Termux Package and Python Package Manager with FZF
+# Supports both Termux packages (pkg/apt) and Python packages (pip)
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# FZF arguments for interactive selection
+fzf_args=(
+  --multi
+  --header='Select packages to uninstall (Tab: multi-select, Enter: confirm)'
+  --preview-label='alt-p: toggle preview, alt-j/k: scroll, tab: multi-select'
+  --preview-label-pos='bottom'
+  --preview-window 'down:65%:wrap'
+  --bind 'alt-p:toggle-preview'
+  --bind 'alt-d:preview-half-page-down,alt-u:preview-half-page-up'
+  --bind 'alt-k:preview-up,alt-j:preview-down'
+  --color 'pointer:red,marker:red,header:blue'
+)
+
+# Function to show completion message
+show_done() {
+  echo -e "${GREEN}✓ Operation completed!${NC}"
+}
+
+# Function to display menu
+show_menu() {
+  echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${YELLOW}  Termux Package Manager${NC}"
+  echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${GREEN}a)${NC} Uninstall Termux packages (pkg/apt)"
+  echo -e "${GREEN}s)${NC} Uninstall Python packages (pip)"
+  echo -e "${GREEN}3)${NC} List all Termux packages"
+  echo -e "${GREEN}4)${NC} List all Python packages"
+  echo -e "${GREEN}q)${NC} Exit"
+  echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -n "Select an option: "
+}
+
+# Function to uninstall Termux packages
+uninstall_termux_packages() {
+  echo -e "${YELLOW}Loading Termux packages...${NC}"
+  
+  # List installed packages with preview showing package info
+  pkg_names=$(dpkg --get-selections | awk '{print $1}' | fzf "${fzf_args[@]}" \
+    --preview 'apt show {} 2>/dev/null || echo "No information available"' \
+    --header='Select Termux packages to uninstall')
+  
+  if [[ -n "$pkg_names" ]]; then
+    echo -e "${YELLOW}Selected packages:${NC}"
+    echo "$pkg_names"
+    echo ""
+    read -p "Confirm uninstallation? (y/N): " confirm
+    
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+      echo "$pkg_names" | tr '\n' ' ' | xargs apt remove -y
+      show_done
+    else
+      echo -e "${RED}Cancelled.${NC}"
+    fi
+  else
+    echo -e "${RED}No packages selected.${NC}"
+  fi
+}
+
+# Function to uninstall Python packages
+uninstall_python_packages() {
+  echo -e "${YELLOW}Loading Python packages...${NC}"
+  
+  # List installed pip packages with preview showing package info
+  pip_names=$(pip list --format=freeze | cut -d'=' -f1 | fzf "${fzf_args[@]}" \
+    --preview 'pip show {} 2>/dev/null || echo "No information available"' \
+    --header='Select Python packages to uninstall')
+  
+  if [[ -n "$pip_names" ]]; then
+    echo -e "${YELLOW}Selected packages:${NC}"
+    echo "$pip_names"
+    echo ""
+    read -p "Confirm uninstallation? (y/N): " confirm
+    
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+      echo "$pip_names" | tr '\n' ' ' | xargs pip uninstall -y
+      show_done
+    else
+      echo -e "${RED}Cancelled.${NC}"
+    fi
+  else
+    echo -e "${RED}No packages selected.${NC}"
+  fi
+}
+
+# Function to list Termux packages
+list_termux_packages() {
+  echo -e "${YELLOW}Installed Termux packages:${NC}"
+  dpkg --get-selections | awk '{print $1}' | sort | less
+}
+
+# Function to list Python packages
+list_python_packages() {
+  echo -e "${YELLOW}Installed Python packages:${NC}"
+  pip list
+}
+
+# Main loop
+while true; do
+  show_menu
+  read -r choice
+  
+  case $choice in
+    a)
+      uninstall_termux_packages
+      ;;
+    s)
+      uninstall_python_packages
+      ;;
+    3)
+      list_termux_packages
+      ;;
+    4)
+      list_python_packages
+      ;;
+    q)
+      echo -e "${GREEN}Goodbye!${NC}"
+      exit 0
+      ;;
+    *)
+      echo -e "${RED}Invalid option. Please try again.${NC}"
+      ;;
+  esac
+  
+  echo ""
+  read -p "Press Enter to continue..."
+  clear
+done
