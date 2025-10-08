@@ -19,6 +19,8 @@ export VISUAL=vim
 # exporting script path
 export PATH="$HOME/.local/bin:$PATH"
 
+# bind Ctrl+R to histor function
+bind -x '"\C-r": histor'
 # Initialize tools if installed
 if command -v starship &>/dev/null; then
   eval "$(starship init bash)"

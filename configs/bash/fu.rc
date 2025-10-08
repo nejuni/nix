@@ -1,40 +1,45 @@
  
 #fzf functions
 
-# fuzzy find history execute with enter edit with tab
+# fuzzy find history execute with enter edit with tab with Ctrl+R
 
-if command -v fzf >/dev/null 2>&1; then
-  fh() {
-    local selected
-    # Search history with fzf, newest first
-    # Remove duplicate commands and line numbers
-    selected=$(history | sort -r | awk '{$1=""; print substr($0,2)}' | awk '!seen[$0]++' | fzf --no-sort \
-      --expect=tab \
-      --prompt='History> ' \
-      --height=100% \
-      --preview='echo {}' \
-      --preview-window=down:3:wrap)
-    
+histor() {
+    local selected key cmd tmpfile
+    tmpfile="$(mktemp "$HOME/fh_history.XXXXXX")"
+
+
+    # Build history (reverse order, de-duplicate)
+    history | tac | sed 's/^[ ]*[0-9]*[ ]*//' | awk '!seen[$0]++' > "$tmpfile"
+
+    # fzf interface with rg live reload and live preview
+    selected=$(
+        fzf --no-sort \
+            --height=100% \
+            --prompt='History> ' \
+            --preview-window='down:3:wrap' \
+            --preview 'echo {}' \
+            --bind "change:reload:rg --no-heading --no-line-number --color=never --ignore-case {q} $tmpfile || true" \
+            --ansi \
+            --expect=tab \
+            < "$tmpfile"
+    )
+
+    rm -f "$tmpfile"
+
+    # Handle result
     if [[ -n "$selected" ]]; then
-      # Extract the key and command
-      local key=$(echo "$selected" | head -1)
-      local cmd=$(echo "$selected" | tail -1)
-      
-      if [[ "$key" == "tab" ]]; then
-        # Print to command line for editing
-        # Use read with pre-filled input for bash
-        read -e -i "$cmd" -p "> " edited_cmd
-        if [[ -n "$edited_cmd" ]]; then
-          eval "$edited_cmd"
+        key=$(echo "$selected" | head -n 1)
+        cmd=$(echo "$selected" | tail -n +2)
+        [[ -z "$cmd" ]] && cmd="$key" && key=""
+
+        if [[ "$key" == "tab" ]]; then
+            READLINE_LINE="$cmd"
+            READLINE_POINT=${#READLINE_LINE}
+        else
+            eval "$cmd"
         fi
-      else
-        # Print and execute the command
-        echo "$cmd"
-        eval "$cmd"
-      fi
     fi
-  }
-fi
+}
 
 # fuzzy change to dir with fd
 
