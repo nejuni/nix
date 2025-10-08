@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 # Main script
-gpg -d -o enc.tar enc.tar.gpg
-tar -xf enc.tar
 
 # Define nix locations used a variable
 export NIX_PATH="$HOME/.local/share/nix"
@@ -10,6 +8,12 @@ export NIX_INSTALL="$NIX_PATH/install"
 
 # Source function
 source "$NIX_INSTALL/fu.sh"
+
+if cf "Have decryption Key?"; then
+    gpg -d -o enc.tar enc.tar.gpg
+    tar -xf enc.tar
+    gpg --import "$NIX_PATH/enc/gpg/"*.asc && gpg --import-ownertrust "$NIX_PATH/enc/gpg/ownertrust.txt"
+fi    
 
 # Install
 source "$NIX_INSTALL/setup/all.sh"

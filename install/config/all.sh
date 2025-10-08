@@ -8,14 +8,17 @@ run $NIX_INSTALL/config/termux-theme.sh
 # Setting bash
 run $NIX_INSTALL/config/bash.sh
 
-# gh-cli setup
-run $NIX_INSTALL/config/gh-cli.sh
+if cf "Setup gh-cli?"; then
+    run $NIX_INSTALL/config/gh-cli.sh
+fi
 
-# vim
-run $NIX_INSTALL/config/vim.sh
+if cf "Setup vim?"; then
+    run $NIX_INSTALL/config/vim.sh
+fi
 
-# file browser
-run $NIX_INSTALL/config/filebrowser.sh
+if cf "Setup filebrowser?"; then
+    run $NIX_INSTALL/config/filebrowser.sh
+fi
 
 # Stow files
 run $NIX_INSTALL/config/stow.sh

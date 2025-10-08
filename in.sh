@@ -7,6 +7,7 @@ gum spin --spinner dot --spinner.foreground 81 --title "Cloning nix repo..." --t
 
 git clone "https://github.com/nejuni/nix.git" ~/.local/share/nix >/dev/null
 
-clear
-cd ~/.local/share/nix/install
-chmod +x m
+chmod +x ~/.local/share/nix/st.sh
+
+gum style "~/.local/share/nix/st.sh
+" --foreground 254 --bold --padding "2 14" --border normal --border-foreground 81

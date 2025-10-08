@@ -4,11 +4,10 @@ ds "Post-install Setup..."
 
 # Packages
 
-# apt
-run $NIX_INSTALL/setup/apt-pkg.sh
-
-# python
-run $NIX_INSTALL/setup/pyt-pkg.sh
+if cf "Install packages?"; then
+    run $NIX_INSTALL/setup/apt-pkg.sh
+    run $NIX_INSTALL/setup/pyt-pkg.sh
+fi
 
 # dir script
 run $NIX_INSTALL/setup/dir.sh

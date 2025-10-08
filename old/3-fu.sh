@@ -15,25 +15,8 @@ ds() {
     gum spin --spinner dot --spinner.foreground 81 --title "$msg" --title.foreground 254 -- sleep 2
 }
 
-# Confirm function with theme colors
-cf() {
-    local msg="$1"
-    
-    gum confirm "$msg" \
-        --prompt.foreground 254 \
-        --prompt.bold \
-        --prompt.padding "1 2" \
-        --prompt.border normal \
-        --prompt.border-foreground 81 \
-        --selected.foreground 81 \
-        --selected.background 0 \
-        --unselected.foreground 254 \
-        --unselected.background 0
-}
-
 # Export the functions so child scripts can use them
 export -f ds
-export -f cf
 
 # Run script
 run() {
