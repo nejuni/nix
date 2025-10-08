@@ -2,9 +2,6 @@
 
 ds "Post-install Setup..."
 
-# gpg
-source $NIX_INSTALL/setup/age.sh
-
 # Packages
 
 # apt

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
 # Main script
+gpg -d -o enc.tar enc.tar.gpg
+tar -xf enc.tar
+
 # Define nix locations used a variable
 export NIX_PATH="$HOME/.local/share/nix"
 export NIX_INSTALL="$NIX_PATH/install"
