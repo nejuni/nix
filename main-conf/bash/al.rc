@@ -1,0 +1,38 @@
+alias xe='chmod a+x'
+alias mkd='mkdir -p' # dl for delete
+alias start='time bash -i -c exit'
+# Eza file listing (modern ls replacement)
+alias cdd='cd ..'
+alias la='eza -Alh --icons'
+alias ls='eza -a -F -h --icons --color=always'
+alias lt='eza --tree --icons -a'
+alias cl='clear'
+
+alias cf=':> ' # for empty exist file like cf curl.md
+# git
+alias ghc='git checkout'
+alias ghp='git push origin --mirror --force'
+alias ghs='git status'
+# git checkout --orphan' #git rm -rf . for empty branch with no files for a new kd branch i.e. ghc --orphan kd && git rm -rf .
+# System management
+alias tm='tmux'
+alias tma='tmux attach'
+
+alias ex='exit'
+alias cle='apt autoremove -y && apt clean'
+alias upd='pkg update && pkg upgrade -y'
+alias pkgs='apt-mark showmanual'
+alias ba='termux-backup /storage/emulated/0/0-main/snap/termux-pkg.tar && tar -cf /storage/emulated/0/0-main/snap/termux-backup.tar -C /data/data/com.termux/files ./home'
+# termux restore
+# termux-restore /storage/emulated/0/0-main/snap/termux-pkg.tar && tar -xf /storage/emulated/0/0-main/snap/termux-backup.tar -C /data/data/com.termux/files
+
+# YouTube operations
+alias ytc='mv /storage/emulated/0/Download/cookies.txt ~/'
+alias ytup='pip install -U yt-dlp'
+
+# file browser file share on local ip
+alias fibr='filebrowser -d ~/.config/filebrowser/filebrowser.db --noauth -r /storage/emulated/0/ -a 0.0.0.0 -p 8080'
+
+# fuzzy find files with names without searching contents in them with rg
+
+alias ff='rg --files --hidden --glob "!.git" | fzf --preview "bat --style=numbers --color=always {}" --bind "tab:toggle-preview" --bind "ctrl-f:change-preview-window(right:90%|right:50%)" --preview-window "right:50%:wrap" | xargs -r $EDITOR'

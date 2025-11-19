@@ -1,0 +1,12 @@
+# Set command timeout to prevent delays
+command_timeout = 5000
+
+[directory]
+read_only = ""  # Disable the lock sign
+
+[directory.substitutions]
+"/storage/emulated/0/0a/doc" = "󰈙 "
+"/storage/emulated/0/Download" = " "
+"/storage/emulated/0/0a/mus" = " "
+"/storage/emulated/0/0a/pho" = " "
+"/storage/emulated/0/-" = " "  # Preserve directory substitution

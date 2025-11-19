@@ -1,0 +1,211 @@
+#fzf functions
+
+# fuzzy find history execute with enter edit with tab with Ctrl+R
+
+histor() {
+    local selected key cmd tmpfile
+    tmpfile="$(mktemp "$HOME/fh_history.XXXXXX")"
+
+
+    # Build history (reverse order, de-duplicate)
+    history | tac | sed 's/^[ ]*[0-9]*[ ]*//' | awk '!seen[$0]++' > "$tmpfile"
+
+    # fzf interface with rg live reload and live preview
+    selected=$(
+        fzf --no-sort \
+            --height=100% \
+            --prompt='History> ' \
+            --preview-window='down:3:wrap' \
+            --preview 'echo {}' \
+            --bind "change:reload:rg --no-heading --no-line-number --color=never --ignore-case {q} $tmpfile || true" \
+            --ansi \
+            --expect=tab \
+            < "$tmpfile"
+    )
+
+    rm -f "$tmpfile"
+
+    # Handle result
+    if [[ -n "$selected" ]]; then
+        key=$(echo "$selected" | head -n 1)
+        cmd=$(echo "$selected" | tail -n +2)
+        [[ -z "$cmd" ]] && cmd="$key" && key=""
+
+        if [[ "$key" == "tab" ]]; then
+            READLINE_LINE="$cmd"
+            READLINE_POINT=${#READLINE_LINE}
+        else
+            eval "$cmd"
+        fi
+    fi
+}
+
+
+
+
+# Git shortcuts
+gco() {
+    git add .
+    git commit -m "$1"
+}
+
+
+# YouTube video downloader with cookies
+ytv() {
+    local url="$1"
+    if [ -z "$url" ]; then
+        echo "Usage: ytv <YouTube-URL>"
+        return 1
+    fi
+    
+    local cookies_file="$HOME/cookies.txt"
+    local cookies_option=""
+    if [ -f "$cookies_file" ]; then
+        cookies_option="--cookies $cookies_file"
+        echo "Using cookies from: $cookies_file"
+    else
+        echo "Warning: Cookies file not found"
+    fi
+    
+    echo "Fetching formats for: $url"
+    yt-dlp $cookies_option -F "$url"
+    echo -n "Enter format code (e.g. 251+616): "
+    read format
+    
+    if yt-dlp $cookies_option --write-subs --sub-langs en --skip-download --simulate "$url" >/dev/null 2>&1; then
+        echo "Downloading with subtitles..."
+        yt-dlp $cookies_option -f "$format" --write-subs --sub-langs en \
+            -o "/storage/emulated/0/Download/%(title)s.%(ext)s" "$url"
+    else
+        echo "Downloading without subtitles..."
+        yt-dlp $cookies_option -f "$format" \
+            -o "/storage/emulated/0/Download/%(title)s.%(ext)s" "$url"
+    fi
+}
+
+# trash function
+dl() {
+
+    TRASH_BASE="/storage/emulated/0/Trash"
+    TRASH_FILES="$TRASH_BASE/files"
+    TRASH_INFO="$TRASH_BASE/info"
+
+    # Initialize trash directories
+    init_trash() {
+        mkdir -p "$TRASH_FILES" "$TRASH_INFO" 2>/dev/null
+        chmod 700 "$TRASH_BASE" 2>/dev/null
+    }
+
+    # Generate unique filename if collision exists
+    get_unique_name() {
+        local base="$1"
+        local name="$base"
+        local counter=1
+        
+        while [[ -e "$TRASH_FILES/$name" ]]; do
+            name="${base}_${counter}"
+            ((counter++))
+        done
+        echo "$name"
+    }
+
+    init_trash
+    
+    if [[ $# -eq 0 ]]; then
+        echo "Usage: dl <file/dir>..."
+        return 1
+    fi
+    
+    for item in "$@"; do
+        if [[ ! -e "$item" ]]; then
+            echo "Error: '$item' does not exist"
+            continue
+        fi
+        
+        local abs_path
+        abs_path=$(realpath "$item")
+        
+        local basename
+        basename=$(basename "$item")
+        local unique_name
+        unique_name=$(get_unique_name "$basename")
+        
+        local timestamp
+        timestamp=$(date -Iseconds)
+        
+        cat > "$TRASH_INFO/${unique_name}.trashinfo" << EOF
+[Trash Info]
+Path=$abs_path
+DeletionDate=$timestamp
+EOF
+        
+        if mv "$item" "$TRASH_FILES/$unique_name" 2>/dev/null; then
+            echo "Trashed: $item"
+        else
+            echo "Error: Failed to trash '$item'"
+            rm -f "$TRASH_INFO/${unique_name}.trashinfo"
+        fi
+    done
+}
+
+# for website format by hugo
+mkmd() {
+    read -p "Title: " title
+    read -p "Description: " desc
+    read -p "Tags (space or comma separated): " tags
+
+    # Normalize tags: convert space/comma → ", "
+    formatted_tags=$(echo "$tags" \
+        | sed 's/[, ]\+/", "/g' \
+        | sed 's/^/"/' \
+        | sed 's/$/"/')
+
+    # filename from title
+    file="$(echo "$title" | tr 'A-Z ' 'a-z-').md"
+
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    cat <<EOF > "$file"
+---
+title: "$title"
+description: "$desc"
+date: $now
+lastmod: $now
+tags: [$formatted_tags]
+draft: false
+---
+EOF
+
+    echo "✅ Created $file"
+}
+
+# rsync copy function
+cpp() {
+    read -rp "Source path: " src
+    read -rp "Destination path: " dest
+    
+    # Verify input not empty
+    if [[ -z "$src" || -z "$dest" ]]; then
+        echo "❌ Source or destination can't be empty"
+        return 1
+    fi
+    
+    # Expand tilde (~) to actual home directory
+    src="${src/#\~/$HOME}"
+    dest="${dest/#\~/$HOME}"
+    
+    # Resolve to absolute paths
+    src=$(realpath -s "$src" 2>/dev/null || echo "$src")
+    dest=$(realpath -s "$dest" 2>/dev/null || echo "$dest")
+    
+    # Verify source exists
+    if [[ ! -e "$src" ]]; then
+        echo "❌ Source path does not exist: $src"
+        return 1
+    fi
+    
+    # Execute rsync
+    echo "📋 Copying from: $src"
+    echo "📋 Copying to: $dest"
+    rsync -avh "$src" "$dest"
+}

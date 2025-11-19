@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Download script for Termux using Aria2
+# Save this as 'download.sh' and run: bash download.sh
+
+# Ask user for download URL
+read -p "Enter the download URL: " URL
+
+# Verify URL was provided
+if [ -z "$URL" ]; then
+    echo "Error: No URL provided. Exiting."
+    exit 1
+fi
+
+# Download directory (Android storage)
+DOWNLOAD_DIR="/storage/emulated/0/Download"
+
+# Aria2 parameters (32 threads max)
+THREADS=16
+SPLIT=16
+MIN_SPLIT_SIZE="2M"
+
+# Create directory if not exists
+mkdir -p "$DOWNLOAD_DIR"
+
+# Start download with maximum speed
+aria2c \
+  --dir="$DOWNLOAD_DIR" \
+  --max-connection-per-server="$THREADS" \
+  --split="$SPLIT" \
+  --min-split-size="$MIN_SPLIT_SIZE" \
+  --file-allocation=prealloc \
+  --continue=true \
+  --check-certificate=false \
+  --user-agent="Mozilla/5.0" \
+  "$URL"
+
+echo "Download complete! File saved to: $DOWNLOAD_DIR"

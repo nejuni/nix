@@ -1,0 +1,165 @@
+{
+    name: ["Dj", ".sh", ".rc", ".vim", ".bash", ".bashrc", ".ash", ".zsh", ".zshrc", ".bash_profile"]
+    
+    // Calm Eye Color Palette - Inspired by vintage paper and warm ink tones
+    // Background suggestions: #FBF8F3 (warm cream) or #F5F1E8 (aged paper)
+    styles: [
+        "keyword", #8B7355, #A0826D
+        "funDefName", #C17817, #D4935C
+        "funName", #B8860B, #DAA520
+        "variable", #5B7C8D, #7B9CAD
+        "string", #6B8E6B, #87A987
+        "number", #BC9862, #D4B583
+        "comment", #9B9B8A, #B5B5A4
+        "strEscape", #B85C50, #CC7A6F
+        "error", #A64D4D, #C16B6B
+        "operator", #8B7966, #A89379
+        "punctuation", #7A7A6E, #9A9A8E
+    ]
+    
+    comment: {startsWith: "#"}
+    
+    defines: [
+        "funNameRegex": /[.\-\/@#:\w]+/
+        "funNameRegexOrEmpty": /(?:/ + include("funNameRegex") + /)?/
+        "arithmeticExpChildren": [
+            {include: "arithmeticExpGroup"}
+            {match: /(?i)\b(0x[0-9A-F]+|0[0-7]+|[1-9][0-9]*#[0-9a-z]+|[0-9]+)\b/, 0: "number"}
+        ]
+        "arithmeticExpGroup": {
+            start: {match: /\(/, 0: "punctuation"}
+            end: {match: /\)/, 0: "punctuation"}
+            contains: [
+                {include: "arithmeticExpChildren"}
+                {match: /[+\-*\/%]/, 0: "operator"}
+            ]
+        }
+        "exp": [
+            {match: /\$(?:[a-zA-Z_]\w*|[0-9#*@?$!\-])/, 0: "variable"}
+            {
+                style: "variable"
+                start: {match: /(\$)\{/, 1: "keyword"}
+                end: {match: /\}/, 0: "keyword"}
+                contains: [
+                    {include: "exp"}
+                    {include: "str"}
+                    {include: "num"}
+                    {match: /[:\-=+?]/, 0: "operator"}
+                ]
+            }
+            {
+                style: "default"
+                start: {match: /\$\(\(/, 0: "keyword"}
+                end: {match: /\)\)/, 0: "keyword"}
+                contains: [
+                    {include: "arithmeticExpGroup"}
+                    {match: /[+\-*\/%<>=!&|]/, 0: "operator"}
+                ]
+            }
+            {
+                style: "default"
+                start: {match: /(\$)(\(/ + include("funNameRegexOrEmpty") + /)/, 1: "keyword", 2: "funName"}
+                end: {match: /\)/, 0: "funName"}
+                contains: [
+                    {include: "exp"}
+                    {include: "str"}
+                    {include: "num"}
+                    {match: /(?m)(?<=[;\{\|])[ \t]*(/ + include("funNameRegex") + /)\b(?![ \t]*\+?=)/, 1: "funName"}
+                ]
+            }
+            {
+                style: "default"
+                start: {match: /`/ + include("funNameRegexOrEmpty"), 0: "funName"}
+                end: {match: /`/, 0: "funName"}
+                contains: [
+                    {include: "exp"}
+                    {include: "str"}
+                    {include: "num"}
+                    {match: /(?m)(?<=[;\{\|])[ \t]*(/ + include("funNameRegex") + /)\b(?![ \t]*\+?=)/, 1: "funName"}
+                ]
+            }
+        ]
+        "str": [
+            {match: /\\./, 0: "strEscape"}
+            {
+                style: "string"
+                start: {match: /"/, 0: "punctuation"}
+                end: {match: /"/, 0: "punctuation"}
+                contains: [
+                    {match: /\\./, 0: "strEscape"}
+                    {include: "exp"}
+                ]
+            }
+            {
+                style: "string"
+                start: {match: /\$'/, 0: "punctuation"}
+                end: {match: /'/, 0: "punctuation"}
+                contains: [
+                    {match: /\\(?:[abeEfnrtv\\'"?]|[0-7]{1,3}|u[\da-fA-F]{1,4}|U[\da-fA-F]{1,8}|c[^'])/, 0: "strEscape"}
+                    {match: /\\./, 0: "error"}
+                ]
+            }
+            {
+                style: "string"
+                start: {match: /'/, 0: "punctuation"}
+                end: {match: /'/, 0: "punctuation"}
+            }
+        ]
+        "num": {match: /(?<![.+*%@\/\-])\b\d+\b(?![.+*%@\/\-])/, 0: "number"}
+        "hereDoc": [
+            {
+                match: /(?s) <<[ \t]*-[ \t]*(?:\\(?:\r?\n|\r))?(['"])([^ \t\r\n|<>]{1,100})\1[^\r\n]*(.{0,10000}?)[\r\n]\t*(\2)(?=\r?\n|$)/
+                2: "keyword"
+                3: "string"
+                4: "keyword"
+            }
+            {
+                match: /(?s) <<[ \t]*-[ \t]*(?:\\(?:\r?\n|\r))?\\([^ \t\r\n|<>]{1,100})[^\r\n]*(.{0,10000}?)[\r\n]\t*(\1)(?=\r?\n|$)/
+                1: "keyword"
+                2: "string"
+                3: "keyword"
+            }
+            {
+                match: /(?s) <<[ \t]*-[ \t]*(?:\\(?:\r?\n|\r))?([^ \t\r\n|<>]{1,100})[^\r\n]*(.{0,10000}?)[\r\n]\t*(\1)(?=\r?\n|$)/
+                1: "keyword"
+                2: "string"
+                2: {include: "exp"}
+                3: "keyword"
+            }
+            {
+                match: /(?s) <<[ \t]*(?:\\(?:\r?\n|\r)\s*)?\\([^ \t\r\n|<>]{1,100})[^\r\n]*(.{0,10000}?)[\r\n](\1)(?=\r?\n|$)/
+                1: "keyword"
+                2: "string"
+                3: "keyword"
+            }
+            {
+                match: /(?s) <<[ \t]*(?:\\(?:\r?\n|\r)\s*)?(['"])([^ \t\r\n|<>]{1,100})\1[^\r\n]*(.{0,10000}?)[\r\n](\2)(?=\r?\n|$)/
+                2: "keyword"
+                3: "string"
+                4: "keyword"
+            }
+            {
+                match: /(?s) <<[ \t]*(?:\\(?:\r?\n|\r)\s*)?([^ \t\r\n|<>]{1,100})[^\r\n]*(.{0,10000}?)[\r\n](\1)(?=\r?\n|$)/
+                1: "keyword"
+                2: "string"
+                2: {include: "exp"}
+                3: "keyword"
+            }
+        ]
+    ]
+    
+    contains: [
+        {match: /(?s)^\u007fELF.+$/, 0: "default"}
+        {match: /(?m)^[ \t]*#.*$/, 0: "comment"}
+        {include: "exp"}
+        {include: "str"}
+        {include: "num"}
+        {include: "hereDoc"}
+        {match: /(?sm)^[ \t]*:[ \t]*<<\s*-?\s*(/ + include("funNameRegex") + /)\b(.+?)(?-m)(\b\1\b|$)/, 0: "comment"}
+        {match: "(?<![.,/~@%=])" + keywordsToRegex("if then else elif fi for while in do done case esac function return break continue exit") + "(?<![.,/~@%=])", 0: "keyword"}
+        {match: /(?m)^[ \t]*(function[ \t]+)?([\w\-]+)[ \t]*\(/, 1: "keyword", 2: "funDefName"}
+        {match: /(?m)(?<=(?:[;&\{\|]|(?<!\\\n)^))[ \t]*(/ + include("funNameRegex") + /)\b(?![ \t]*\+?=)/, 1: "funName"}
+        {match: /[|&;<>(){}\[\]]/, 0: "operator"}
+        {match: /[+\-*\/%=!<>]/, 0: "operator"}
+    ]
+}

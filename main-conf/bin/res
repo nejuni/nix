@@ -1,0 +1,95 @@
+#!/bin/bash
+# Minimal Fast Restic Profile Manager
+# Usage: res.sh <profile> [restic_command] [args...]
+
+set -euo pipefail
+
+CONFIG_FILE="$HOME/.local/conf/restic/repos.conf"
+LOG_DIR="$HOME/log/restic"
+
+# Create log directory
+mkdir -p "$LOG_DIR"
+
+# Check dependencies
+for cmd in restic rg jq gum; do
+    if ! command -v "$cmd" &> /dev/null; then
+        echo "Error: $cmd not installed"
+        exit 1
+    fi
+done
+
+# Help
+if [[ -z "${1:-}" ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    gum style --foreground 212 --bold "Restic Profile Manager"
+    echo ""
+    echo "Usage: $0 <profile> [restic_command] [args...]"
+    echo ""
+    gum style --foreground 109 "Profiles:"
+    rg '^\[.*\]' "$CONFIG_FILE" --no-line-number | tr -d '[]' | while read -r p; do
+        desc=$(rg -A3 "^\[$p\]" "$CONFIG_FILE" | rg '^description=' | cut -d= -f2 || echo "")
+        [[ -n "$desc" ]] && echo "  $p - $desc" || echo "  $p"
+    done
+    echo ""
+    gum style --foreground 109 "Examples:"
+    echo "  $0 n1 backup /data --tag daily"
+    echo "  $0 n1 snapshots"
+    echo "  $0 n2 restore latest --target /tmp/restore"
+    echo "  $0 n1 forget --keep-last 5 --prune"
+    exit 1
+fi
+
+PROFILE="$1"
+shift
+
+# Fast config parsing with ripgrep
+REPO=$(rg -A3 "^\[$PROFILE\]" "$CONFIG_FILE" | rg '^repository=' | cut -d= -f2)
+PASS_FILE=$(rg -A3 "^\[$PROFILE\]" "$CONFIG_FILE" | rg '^password_file=' | cut -d= -f2)
+
+# Validate
+if [[ -z "$REPO" ]] || [[ -z "$PASS_FILE" ]]; then
+    gum style --foreground 196 "Error: Profile '$PROFILE' not found"
+    exit 1
+fi
+
+# Expand tilde
+PASS_FILE="${PASS_FILE/#\~/$HOME}"
+
+# Check password file
+if [[ ! -f "$PASS_FILE" ]]; then
+    gum style --foreground 196 "Error: Password file not found: $PASS_FILE"
+    exit 1
+fi
+
+# Export environment
+export RESTIC_REPOSITORY="$REPO"
+export RESTIC_PASSWORD_FILE="$PASS_FILE"
+
+# Log file
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="$LOG_DIR/${PROFILE}_${TIMESTAMP}.log"
+
+# Show config
+gum style --foreground 212 "Profile: $PROFILE"
+gum style --foreground 109 "Repo: $REPO"
+echo ""
+
+# Run restic with logging
+restic "$@" 2>&1 | tee "$LOG_FILE"
+EXIT_CODE=${PIPESTATUS[0]}
+
+# Status
+echo ""
+if [[ $EXIT_CODE -eq 0 ]]; then
+    gum style --foreground 114 "Success"
+else
+    gum style --foreground 196 "Failed (exit $EXIT_CODE)"
+fi
+
+# Pretty log summary if JSON output
+if [[ "$*" == *"--json"* ]] && [[ $EXIT_CODE -eq 0 ]]; then
+    echo ""
+    gum style --foreground 109 "Parsed Output:"
+    jq -C '.' "$LOG_FILE" 2>/dev/null || true
+fi
+
+exit $EXIT_CODE

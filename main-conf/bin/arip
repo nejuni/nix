@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# Aria2 Download Script for Termux
+# Optimized for 4GB RAM devices with high parallelization
+# Downloads to: /storage/emulated/0/Download/
+# Reads URLs from: /storage/emulated/0/termux/text/uri.txt
+
+# Check if aria2 is installed
+if ! command -v aria2c &> /dev/null; then
+    echo "Aria2 is not installed. Installing now..."
+    pkg update && pkg upgrade -y
+    pkg install aria2 -y
+    if ! command -v aria2c &> /dev/null; then
+        echo "Failed to install Aria2. Please install manually."
+        exit 1
+    fi
+fi
+
+# Create download directory if it doesn't exist
+DOWNLOAD_DIR="/storage/emulated/0/Download/"
+mkdir -p "$DOWNLOAD_DIR"
+
+# Input file containing URLs (one URL per line)
+INPUT_FILE="/storage/emulated/0/uri.txt"
+
+# Check if input file exists
+if [ ! -f "$INPUT_FILE" ]; then
+    echo "URLs file not found at: $INPUT_FILE"
+    echo "Please create this file with your download URLs (one per line)"
+    echo "Example file content:"
+    echo "https://example.com/file1.zip"
+    echo "https://example.com/file2.zip"
+    exit 1
+fi
+
+# Check if the file is empty
+if [ ! -s "$INPUT_FILE" ]; then
+    echo "URLs file is empty. Please add download URLs to: $INPUT_FILE"
+    exit 1
+fi
+
+echo "Found URLs file at: $INPUT_FILE"
+echo "Contents:"
+cat "$INPUT_FILE"
+echo ""
+
+# Optimized Aria2 parameters for 4GB RAM device with high parallelization
+# - 16 connections per server (increased for higher speed)
+# - 16 splits per download (increased parallelization)
+# - 1MB piece size for better distribution
+# - 3 parallel downloads (reduced to compensate for higher per-file threads)
+# - Continue partial downloads
+# - File allocation: pre-allocate (helps with large files)
+# - Disk cache: 32MB (increased to handle more connections)
+# - Optimized timeout settings
+
+echo "Starting high-speed downloads with Aria2 (16 threads/split)..."
+aria2c \
+    --input-file="$INPUT_FILE" \
+    --dir="$DOWNLOAD_DIR" \
+    --max-connection-per-server=16 \
+    --split=16 \
+    --min-split-size=1M \
+    --piece-length=1M \
+    --max-concurrent-downloads=3 \
+    --continue=true \
+    --file-allocation=prealloc \
+    --disk-cache=32M \
+    --connect-timeout=30 \
+    --timeout=60 \
+    --max-tries=5 \
+    --retry-wait=10 \
+    --summary-interval=10 \
+    --auto-save-interval=10 \
+    --console-log-level=warn
+
+echo "Downloads completed. Files saved to: $DOWNLOAD_DIR"
