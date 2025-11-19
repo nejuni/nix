@@ -25,8 +25,8 @@ gum spin --spinner dot --spinner.foreground 81 --title "Cloning nix repo..." --t
 rm -rf ~/.local/share/nix
 
 # repo clone
-mkdir -p ~/.local/share/nix
-cd ~/.local/share/nix
+mkdir -p ~/.local/share
+cd ~/.local/share
 git clone -b main https://github.com/nejuni/nix.git
 
 mkdir -p ~/.local/conf
