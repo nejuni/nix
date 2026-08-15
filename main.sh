@@ -15,7 +15,7 @@ rm -rf ~/.local/share/nix
 # repo clone
 mkdir -p ~/.local/share
 cd ~/.local/share
-git clone -b main https://github.com/nejuni/nix.git
+git clone -b 0 https://github.com/nejuni/nix.git
 
 mkdir -p ~/.local/dot
 rsync -avh ~/.local/share/nix/dot/ ~/.local/dot/
