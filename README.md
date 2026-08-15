@@ -4,11 +4,11 @@
 ## One liner
 main
 ```
-bash <(curl -fsSL https://raw.githubusercontent.com/nejuni/nix/main/main.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/nejuni/nix/0/main.sh)
 ```
 enc
 ```
-bash <(curl -fsSL https://raw.githubusercontent.com/nejuni/nix/main/enc.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/nejuni/nix/0/enc.sh)
 ```
 
 ## fu.sh function
