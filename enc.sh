@@ -11,7 +11,7 @@ cd "$NIX_PATH"
 age -d -o enc-dot.tar enc-dot.tar.age
 
 tar -xpf enc-dot.tar
-rsync -avh "$NIX_PATH/enc-dot/" "$NIX_CONF/"
+rsync -avh "$NIX_PATH/enc-dot/" "$NIX_PATH/dot/"
 
 source "$NIX_INSTALL/config/all.sh"
 
