@@ -1,0 +1,399 @@
+#!/bin/bash
+# Restic Direct rclone Backend - Optimized for Termux
+# Maximum speed for 33GB+ files within GDrive API limits
+# No REST server needed - more stable and faster
+
+set -euo pipefail
+
+CONFIG_FILE="$HOME/.local/conf/restic/repos.conf"
+LOG_DIR="$HOME/log/restic"
+mkdir -p "$LOG_DIR"
+
+# ============================================================================
+# DEPENDENCY CHECK
+# ============================================================================
+
+for cmd in restic rclone; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "Error: $cmd is not installed"
+        echo ""
+        echo "Install with:"
+        echo "  pkg install restic rclone"
+        exit 1
+    fi
+done
+
+# ============================================================================
+# HELP & USAGE
+# ============================================================================
+
+if [[ -z "${1:-}" ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Restic Direct rclone Backend (Termux Optimized)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "Usage: $0 <profile> <command> [args...]"
+    echo ""
+    echo "Features:"
+    echo "  ✓ Direct rclone backend (no REST server)"
+    echo "  ✓ Optimized for 33GB+ files"
+    echo "  ✓ Maximum speed under GDrive API limits"
+    echo "  ✓ Multitasking friendly"
+    echo "  ✓ Auto-retry on failures"
+    echo ""
+    echo "Profiles:"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        grep '^\[' "$CONFIG_FILE" 2>/dev/null | tr -d '[]' | while read -r p; do
+            desc=$(sed -n "/^\[$p\]/,/^\[/p" "$CONFIG_FILE" | grep '^description=' | cut -d= -f2 || echo "")
+            if [[ -n "$desc" ]]; then
+                printf "  %-15s - %s\n" "$p" "$desc"
+            else
+                echo "  $p"
+            fi
+        done
+    else
+        echo "  (no config file found at $CONFIG_FILE)"
+    fi
+    echo ""
+    echo "Common Commands:"
+    echo "  backup      Backup files/directories"
+    echo "  snapshots   List all snapshots"
+    echo "  restore     Restore files from snapshot"
+    echo "  ls          List files in snapshot"
+    echo "  forget      Remove old snapshots"
+    echo "  prune       Clean up repository"
+    echo "  check       Verify repository integrity"
+    echo "  stats       Show repository statistics"
+    echo ""
+    echo "Examples:"
+    echo "  $0 0-app1 backup /sdcard/DCIM --tag photos"
+    echo "  $0 0-app1 snapshots"
+    echo "  $0 0-app1 restore latest --target /sdcard/restore"
+    echo "  $0 0-app1 ls latest"
+    echo "  $0 0-app1 forget --keep-last 7 --prune"
+    echo "  $0 0-app1 stats"
+    echo ""
+    echo "Config file format (~/.local/conf/restic/repos.conf):"
+    echo "  [profile-name]"
+    echo "  repository=rclone:gdrive:bucket-name/path"
+    echo "  password_file=~/.config/restic/password.txt"
+    echo "  description=My backup description"
+    echo ""
+    exit 0
+fi
+
+PROFILE="$1"
+shift
+
+# ============================================================================
+# PARSE CONFIGURATION
+# ============================================================================
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Error: Config file not found: $CONFIG_FILE"
+    echo ""
+    echo "Create it with:"
+    echo "  mkdir -p $(dirname "$CONFIG_FILE")"
+    echo "  cat > $CONFIG_FILE << 'EOF'"
+    echo "  [0-app1]"
+    echo "  repository=rclone:gdrive:my-bucket/restic"
+    echo "  password_file=~/.config/restic/password.txt"
+    echo "  description=My Google Drive backup"
+    echo "  EOF"
+    exit 1
+fi
+
+# Extract repository and password file from config
+REPO=$(sed -n "/^\[$PROFILE\]/,/^\[/p" "$CONFIG_FILE" | grep '^repository=' | cut -d= -f2 | head -1)
+PASS_FILE=$(sed -n "/^\[$PROFILE\]/,/^\[/p" "$CONFIG_FILE" | grep '^password_file=' | cut -d= -f2 | head -1)
+DESCRIPTION=$(sed -n "/^\[$PROFILE\]/,/^\[/p" "$CONFIG_FILE" | grep '^description=' | cut -d= -f2 | head -1)
+
+# Validate configuration
+if [[ -z "$REPO" ]]; then
+    echo "Error: Profile '$PROFILE' not found in $CONFIG_FILE"
+    echo ""
+    echo "Available profiles:"
+    grep '^\[' "$CONFIG_FILE" | tr -d '[]'
+    exit 1
+fi
+
+if [[ -z "$PASS_FILE" ]]; then
+    echo "Error: No 'password_file' defined for profile '$PROFILE'"
+    exit 1
+fi
+
+# Expand tilde in password file path
+PASS_FILE="${PASS_FILE/#\~/$HOME}"
+
+# Check password file exists
+if [[ ! -f "$PASS_FILE" ]]; then
+    echo "Error: Password file not found: $PASS_FILE"
+    echo ""
+    echo "Create it with:"
+    echo "  mkdir -p $(dirname "$PASS_FILE")"
+    echo "  echo 'your-secure-password' > $PASS_FILE"
+    echo "  chmod 600 $PASS_FILE"
+    exit 1
+fi
+
+# Validate repository format
+if [[ ! "$REPO" =~ ^rclone: ]]; then
+    echo "Error: Repository must start with 'rclone:' for direct backend"
+    echo "Current: $REPO"
+    echo ""
+    echo "Change to format: rclone:remote-name:bucket/path"
+    echo "Example: rclone:gdrive:my-backup/restic"
+    exit 1
+fi
+
+# Export for restic
+export RESTIC_REPOSITORY="$REPO"
+export RESTIC_PASSWORD_FILE="$PASS_FILE"
+
+# ============================================================================
+# RCLONE OPTIMIZATION - DIRECT BACKEND
+# ============================================================================
+
+# LARGE FILE OPTIMIZATION (33GB+)
+export RCLONE_DRIVE_CHUNK_SIZE=256M              # 256MB chunks for large files
+export RCLONE_DRIVE_UPLOAD_CUTOFF=256M           # Use chunked upload at 256MB
+export RCLONE_BUFFER_SIZE=256M                   # Large buffer for sustained speed
+
+# MAXIMUM SPEED WITHIN API LIMITS
+# GDrive free: 840K queries/min = 14,000/sec
+# Using 8 TPS = 480/min (3.4% of limit - very safe)
+export RCLONE_TRANSFERS=3                        # 3 parallel file transfers
+export RCLONE_CHECKERS=6                         # 6 parallel file checkers
+export RCLONE_TPSLIMIT=8                         # 8 transactions per second
+export RCLONE_TPSLIMIT_BURST=20                  # Allow bursts up to 20
+
+# BANDWIDTH (adjust based on your connection)
+export RCLONE_BWLIMIT=50M                        # 50MB/s limit (remove for unlimited)
+# Uncomment below for unlimited speed:
+# unset RCLONE_BWLIMIT
+
+# MULTI-THREADING FOR LARGE FILES
+export RCLONE_MULTI_THREAD_STREAMS=4             # 4 streams per file
+export RCLONE_MULTI_THREAD_CUTOFF=250M           # Multi-thread files >250MB
+export RCLONE_MULTI_THREAD_CHUNK_SIZE=64M        # 64MB chunks per stream
+
+# RETRY & RELIABILITY
+export RCLONE_RETRIES=20                         # 20 retries on failure
+export RCLONE_LOW_LEVEL_RETRIES=50               # 50 low-level retries
+export RCLONE_TIMEOUT=1800s                      # 30min timeout per operation
+export RCLONE_CONTIMEOUT=180s                    # 3min connection timeout
+export RCLONE_EXPECT_CONTINUE_TIMEOUT=30s        # 30s expect timeout
+
+# RATE LIMIT PROTECTION
+export RCLONE_DRIVE_PACER_MIN_SLEEP=100ms        # Min 100ms between API calls
+export RCLONE_DRIVE_PACER_BURST=50               # Allow burst of 50 requests
+export RCLONE_MAX_BACKLOG=100000                 # Large backlog queue
+
+# GOOGLE DRIVE SPECIFIC
+export RCLONE_DRIVE_ACKNOWLEDGE_ABUSE=true       # Bypass abuse detection
+export RCLONE_DRIVE_KEEP_REVISION_FOREVER=false  # Don't keep all revisions
+export RCLONE_DRIVE_STOP_ON_UPLOAD_LIMIT=true    # Stop if upload quota hit
+export RCLONE_DRIVE_STOP_ON_DOWNLOAD_LIMIT=true  # Stop if download quota hit
+export RCLONE_DRIVE_USE_TRASH=false              # Permanent delete (faster)
+
+# PERFORMANCE TUNING
+export RCLONE_FAST_LIST=false                    # Disabled (uses more API calls)
+export RCLONE_NO_TRAVERSE=false                  # Enable directory traversal
+export RCLONE_NO_CHECK_DEST=false                # Always check destination
+export RCLONE_USE_MMAP=false                     # Don't use mmap (saves RAM)
+export RCLONE_NO_GZIP_ENCODING=false             # Allow gzip compression
+export RCLONE_DISABLE_HTTP2=false                # Keep HTTP/2 enabled
+
+# LOGGING (for debugging if needed)
+# export RCLONE_LOG_LEVEL=INFO                   # Set to DEBUG for troubleshooting
+# export RCLONE_LOG_FILE="$LOG_DIR/rclone_$(date +%Y%m%d_%H%M%S).log"
+
+# ============================================================================
+# RESTIC OPTIMIZATION
+# ============================================================================
+
+export RESTIC_PACK_SIZE=128                      # 256MB pack files
+export RESTIC_COMPRESSION=auto                   # Auto compression (balanced)
+export RESTIC_READ_CONCURRENCY=2                 # 2 concurrent reads
+export RESTIC_CACHE_DIR="$HOME/.cache/restic"    # Cache directory
+
+# Advanced options
+export RESTIC_MAX_UNUSED_BYTES=1G                # Keep 1GB unused data
+export RESTIC_MIN_PACKFILE_SIZE=128M             # Min 128MB pack size
+
+# Performance limits (for multitasking)
+export GOMAXPROCS=4                              # Use max 4 CPU cores
+export RESTIC_PROGRESS_FPS=2                     # Update progress 2x/second
+
+# Create cache directory
+mkdir -p "$RESTIC_CACHE_DIR"
+
+# ============================================================================
+# SYSTEM OPTIMIZATION
+# ============================================================================
+
+# Set process priority for multitasking
+# 10 = slightly lower priority (allows smooth multitasking)
+renice -n 10 $$ 2>/dev/null || true
+
+# Acquire wake lock (prevent sleep during operation)
+WAKE_LOCK_HELD=0
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock 2>/dev/null && WAKE_LOCK_HELD=1
+fi
+
+# Cleanup function
+cleanup() {
+    if [[ $WAKE_LOCK_HELD -eq 1 ]]; then
+        termux-wake-unlock 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+# ============================================================================
+# STATUS DISPLAY
+# ============================================================================
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Profile: $PROFILE"
+[[ -n "$DESCRIPTION" ]] && echo "Description: $DESCRIPTION"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Repository: $REPO"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Optimization Settings:"
+echo "  • Backend: Direct rclone (no REST server)"
+echo "  • Chunk size: 256MB (optimal for 33GB+ files)"
+echo "  • Transfers: 3 parallel"
+echo "  • Multi-thread: 4 streams for files >250MB"
+echo "  • API rate: 8 TPS (480/min of 14,000 limit - 3.4%)"
+echo "  • Bandwidth: ${RCLONE_BWLIMIT:-unlimited}"
+echo "  • CPU cores: 4 max, priority: 10 (multitask-friendly)"
+echo "  • Wake lock: $([ $WAKE_LOCK_HELD -eq 1 ] && echo "enabled" || echo "disabled")"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# ============================================================================
+# LOG FILE SETUP
+# ============================================================================
+
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="$LOG_DIR/${PROFILE}_${TIMESTAMP}.log"
+
+# ============================================================================
+# EXECUTE RESTIC WITH AUTO-RETRY
+# ============================================================================
+
+MAX_RETRIES=5
+RETRY_COUNT=0
+EXIT_CODE=1
+
+echo "Starting: restic $*"
+echo "Log file: $LOG_FILE"
+echo ""
+
+# Progress indicator for long operations
+if [[ "$*" == *"backup"* ]] || [[ "$*" == *"restore"* ]]; then
+    echo "Tip: Keep screen on or use termux-wake-lock"
+    echo ""
+fi
+
+while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
+    if [[ $RETRY_COUNT -gt 0 ]]; then
+        # Exponential backoff: 2min, 4min, 6min, 8min, 10min
+        WAIT_TIME=$((120 * RETRY_COUNT))
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "⏸  Retry $RETRY_COUNT/$MAX_RETRIES"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Waiting ${WAIT_TIME}s before retry..."
+        echo "This gives the API time to recover"
+        echo ""
+        
+        # Countdown
+        for ((i=WAIT_TIME; i>0; i-=10)); do
+            echo -ne "\rTime remaining: ${i}s  "
+            sleep 10
+        done
+        echo -e "\r▶  Resuming...                    "
+        echo ""
+    fi
+    
+    # Run restic
+    restic "$@" 2>&1 | tee "$LOG_FILE"
+    EXIT_CODE=${PIPESTATUS[0]}
+    
+    # Check for errors that warrant retry
+    if [[ $EXIT_CODE -ne 0 ]]; then
+        if grep -qiE "rate.limit|quota.exceeded|429|500 Internal|502 Bad Gateway|503 Service Unavailable|connection reset|timeout" "$LOG_FILE"; then
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            ERROR_TYPE=$(grep -oiE "rate.limit|quota.exceeded|429|500|502|503|timeout" "$LOG_FILE" | head -1)
+            echo ""
+            echo "⚠  Detected error: $ERROR_TYPE"
+        else
+            # Other error, don't retry
+            break
+        fi
+    else
+        # Success
+        break
+    fi
+done
+
+# ============================================================================
+# RESULTS & SUMMARY
+# ============================================================================
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+if [[ $EXIT_CODE -eq 0 ]]; then
+    echo "✓ SUCCESS"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Show summary for backup operations
+    if [[ "$*" == *"backup"* ]]; then
+        echo ""
+        echo "Backup Summary:"
+        echo "───────────────────────────────────────────────────"
+        grep -E "Files:|Dirs:|Added to the repo:|processed" "$LOG_FILE" | tail -10 || echo "No summary available"
+    fi
+    
+    # Show summary for restore operations
+    if [[ "$*" == *"restore"* ]]; then
+        echo ""
+        echo "Restore Summary:"
+        echo "───────────────────────────────────────────────────"
+        grep -E "restoring|files restored|bytes restored" "$LOG_FILE" | tail -5 || echo "No summary available"
+    fi
+    
+else
+    echo "✗ FAILED"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Exit code: $EXIT_CODE"
+    echo ""
+    echo "Last 15 log lines:"
+    echo "───────────────────────────────────────────────────"
+    tail -n 15 "$LOG_FILE"
+    echo "───────────────────────────────────────────────────"
+    
+    if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
+        echo ""
+        echo "⚠  Maximum retries reached"
+        echo ""
+        echo "Troubleshooting suggestions:"
+        echo "  1. Check internet connection"
+        echo "  2. Verify GDrive quota: https://drive.google.com/quota"
+        echo "  3. Check rclone config: rclone config show"
+        echo "  4. Test rclone: rclone lsd ${REPO#rclone:}"
+        echo "  5. Try during off-peak hours"
+        echo "  6. Reduce chunk size: export RCLONE_DRIVE_CHUNK_SIZE=128M"
+        echo "  7. Lower TPS limit: export RCLONE_TPSLIMIT=4"
+    fi
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "Full log: $LOG_FILE"
+echo ""
+
+exit $EXIT_CODE

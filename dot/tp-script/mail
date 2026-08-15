@@ -1,0 +1,529 @@
+#!/usr/bin/env python3
+
+# Google mail run by ~/.config/isyncrc mbsync -a
+
+"""
+mailserver.py — optimized single-file notmuch/mbsync webmail
+
+Speed changes vs the original 3-part version:
+  1. CSS/JS served from cached, immutable static routes instead of being
+     re-embedded in every HTML response (biggest win on mobile data).
+  2. extract_body() + list_attachments() merged into one msg.walk() pass.
+  3. discover_accounts() cached in memory, invalidated after a sync.
+  4. Marking messages read is now ONE batched `notmuch tag` call per
+     thread view instead of one subprocess spawn per message.
+  5. gzip compression on text responses via after_request.
+  6. Meant to run under waitress (see bottom) instead of the Flask
+     dev server — multi-threaded, no reloader overhead, works fine
+     in Termux/proot with plain pip, no compiler needed.
+
+Run:
+    pip install flask waitress
+    python mailserver.py
+"""
+
+import base64
+import gzip
+import io
+import json
+import os
+import re
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+from email import message_from_binary_file, policy
+from email.utils import getaddresses
+from flask import Flask, Response, abort, request
+
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
+
+MAIL_ROOT = Path(os.environ.get("MAIL_ROOT", Path.home() / "Mail"))
+NOTMUCH = os.environ.get("NOTMUCH_BIN", "notmuch")
+MBSYNC = os.environ.get("MBSYNC_BIN", "mbsync")
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8080"))
+ACCOUNTS_TTL = 30  # seconds — how long the account list is trusted
+
+app = Flask(__name__)
+
+_sync_lock = threading.Lock()
+_sync_state = {"running": False, "ok": None, "log": ""}
+
+# ----------------------------------------------------------------------
+# Account discovery (cached)
+# ----------------------------------------------------------------------
+
+_accounts_cache = {"data": [], "ts": 0.0}
+
+
+def discover_accounts(force=False):
+    now = time.time()
+    if not force and (now - _accounts_cache["ts"]) < ACCOUNTS_TTL:
+        return _accounts_cache["data"]
+
+    data = []
+    if MAIL_ROOT.exists():
+        data = sorted(p.name for p in MAIL_ROOT.iterdir() if p.is_dir())
+
+    _accounts_cache["data"] = data
+    _accounts_cache["ts"] = now
+    return data
+
+
+# ----------------------------------------------------------------------
+# notmuch helpers
+# ----------------------------------------------------------------------
+
+def nm_run(*args):
+    result = subprocess.run([NOTMUCH, *args], capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "notmuch command failed")
+    return result.stdout
+
+
+def nm_json(*args):
+    return json.loads(nm_run(*args))
+
+
+# ----------------------------------------------------------------------
+# Sync helpers
+# ----------------------------------------------------------------------
+
+def run_sync():
+    with _sync_lock:
+        if _sync_state["running"]:
+            return
+        _sync_state.update(running=True, ok=None, log="")
+
+    def worker():
+        ok = False
+        log = ""
+        try:
+            proc = subprocess.run(
+                [MBSYNC, "-a"], capture_output=True, text=True, timeout=1800
+            )
+            log += proc.stdout + proc.stderr
+            ok = proc.returncode == 0
+            if ok:
+                try:
+                    log += "\n" + nm_run("new")
+                except Exception as e:
+                    log += f"\nnotmuch new failed: {e}"
+        except Exception as e:
+            log = str(e)
+
+        _sync_state.update(running=False, ok=ok, log=log)
+        # accounts / folder layout may have changed — refresh cache
+        discover_accounts(force=True)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+# ----------------------------------------------------------------------
+# HTML sanitization
+# ----------------------------------------------------------------------
+
+SCRIPT_RE = re.compile(r"<script\b.*?</script>", re.I | re.S)
+EVENT_RE = re.compile(r'\s+on\w+\s*=\s*(".*?"|\'.*?\'|[^\s>]+)', re.I)
+META_REFRESH_RE = re.compile(r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]*>', re.I)
+
+
+def sanitize_html(html):
+    html = SCRIPT_RE.sub("", html)
+    html = EVENT_RE.sub("", html)
+    html = META_REFRESH_RE.sub("", html)
+    html = re.sub(r"javascript\s*:", "removed:", html, flags=re.I)
+    return html
+
+
+# ----------------------------------------------------------------------
+# Message loading
+# ----------------------------------------------------------------------
+
+def _find_file(message_id):
+    files = nm_run("search", "--output=files", f"id:{message_id}").splitlines()
+    if not files:
+        abort(404)
+    return files[0]
+
+
+def load_message(message_id):
+    with open(_find_file(message_id), "rb") as fp:
+        return message_from_binary_file(fp, policy=policy.default)
+
+
+def recipient_email(msg):
+    addrs = getaddresses(msg.get_all("To", []))
+    return addrs[0][1] if addrs else ""
+
+
+def sender_full(msg):
+    return msg.get("From", "")
+
+
+# ----------------------------------------------------------------------
+# Single-pass body + attachment extraction
+# (was two separate msg.walk() calls — now one)
+# ----------------------------------------------------------------------
+
+def extract_body_and_attachments(msg):
+    html = None
+    text = None
+    cid = {}
+    attachments = []
+
+    for idx, part in enumerate(msg.walk()):
+        if part.is_multipart():
+            continue
+
+        ctype = part.get_content_type()
+        content_id = (part.get("Content-ID", "") or "").strip("<>")
+
+        if content_id:
+            try:
+                cid[content_id] = (ctype, part.get_payload(decode=True))
+            except Exception:
+                pass
+
+        disp = (part.get("Content-Disposition") or "").lower()
+        name = part.get_filename()
+        if name or "attachment" in disp:
+            attachments.append((idx, name or f"attachment-{idx}", ctype))
+            # an attachment part is never the html/text body — skip below
+            continue
+
+        if ctype == "text/html" and html is None:
+            try:
+                html = part.get_content()
+            except Exception:
+                pass
+        elif ctype == "text/plain" and text is None:
+            try:
+                text = part.get_content()
+            except Exception:
+                pass
+
+    if html:
+        def repl(match):
+            key = match.group(1)
+            if key not in cid:
+                return match.group(0)
+            mime, payload = cid[key]
+            return 'src="data:%s;base64,%s"' % (mime, base64.b64encode(payload).decode())
+
+        html = re.sub(r'src=["\']cid:([^"\']+)["\']', repl, html)
+        body = (sanitize_html(html), "html")
+    elif text:
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        body = (
+            "<pre style='white-space:pre-wrap;font-family:inherit'>" + text + "</pre>",
+            "text",
+        )
+    else:
+        body = ("<i>(No readable body)</i>", "text")
+
+    return body, attachments
+
+
+# ----------------------------------------------------------------------
+# Static assets — served once, cached forever by the browser
+# ----------------------------------------------------------------------
+
+BASE_CSS = r"""
+:root{--bg:#0f1117;--card:#181c25;--line:#2a3140;--fg:#f5f5f5;--muted:#9ea6b8;--accent:#4f8cff;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,-apple-system,sans-serif;}
+header{position:sticky;top:0;z-index:50;background:var(--card);padding:10px;border-bottom:1px solid var(--line);}
+.top{display:flex;gap:8px;}
+.search{flex:1;}
+.search input{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#10131b;color:var(--fg);font-size:16px;}
+.toolbar{display:flex;gap:8px;margin-top:10px;}
+button,.btn{border:none;border-radius:10px;padding:11px 14px;background:var(--accent);color:white;font-size:15px;}
+.btn.secondary{background:#252b38;}
+.drawer{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100;}
+.drawer.open{display:block;}
+.drawer nav{width:260px;height:100%;background:#161a22;overflow:auto;padding:18px;}
+.drawer a{display:block;color:var(--fg);text-decoration:none;padding:12px 4px;border-bottom:1px solid var(--line);}
+main{padding:8px;}
+.thread{display:block;text-decoration:none;color:inherit;background:var(--card);margin-bottom:8px;border-radius:12px;padding:14px;}
+.thread:hover{background:#202633;}
+.author{font-weight:700;}
+.subject{margin-top:4px;}
+.date{margin-top:8px;color:var(--muted);font-size:13px;}
+.unread .author{color:#84b5ff;}
+.msg{background:var(--card);border-radius:12px;overflow:hidden;margin-bottom:14px;}
+.msghdr{padding:14px;border-bottom:1px solid var(--line);}
+.msgbody iframe{width:100%;border:0;background:white;}
+.attach{padding:12px;}
+.attach a{display:inline-block;text-decoration:none;color:white;background:#2f3747;padding:8px 12px;border-radius:999px;margin:4px;}
+small{color:var(--muted);}
+code{color:#8ec7ff;}
+@media (min-width:900px){body{max-width:900px;margin:auto;}}
+"""
+
+PAGE_JS = r"""
+function menu(){document.getElementById('drawer').classList.toggle('open');}
+function fitFrame(f){try{f.style.height=(f.contentWindow.document.body.scrollHeight+20)+'px';}catch(e){}}
+function syncNow(){let s=document.getElementById('sync');s.textContent='Syncing...';fetch('/sync',{method:'POST'}).then(check);}
+function check(){
+ fetch('/sync/status').then(r=>r.json()).then(x=>{
+   let s=document.getElementById('sync');
+   if(x.running){setTimeout(check,1200);return;}
+   s.textContent=x.ok===false ? 'Sync failed':'Synced';
+ });
+}
+"""
+
+
+@app.route("/static/app.css")
+def static_css():
+    resp = Response(BASE_CSS, mimetype="text/css")
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+@app.route("/static/app.js")
+def static_js():
+    resp = Response(PAGE_JS, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+def html_attr_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace('"', "&quot;")
+
+
+def page(title, body, accounts):
+    account_links = [
+        '<a href="/search?q=tag:inbox">📥 All Inbox</a>',
+        '<a href="/search?q=tag:unread">📬 Unread</a>',
+    ]
+    for acct in accounts:
+        account_links.append(f'<a href="/search?q=folder:{acct}/INBOX">{acct}</a>')
+
+    q = html_attr_escape(request.args.get("q", ""))
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+<div class="top">
+<form class="search" action="/search">
+<input name="q" placeholder="Search mail..." value="{q}">
+</form>
+<button type="button" onclick="menu()">☰</button>
+</div>
+<div class="toolbar">
+<button onclick="syncNow()">Sync</button>
+<a class="btn secondary" href="/search?q=tag:inbox">Inbox</a>
+<a class="btn secondary" href="/search?q=tag:unread">Unread</a>
+<small id="sync"></small>
+</div>
+</header>
+<div id="drawer" class="drawer" onclick="menu()">
+<nav onclick="event.stopPropagation()">
+{"".join(account_links)}
+</nav>
+</div>
+<main>
+{body}
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
+"""
+
+
+# ----------------------------------------------------------------------
+# Routes
+# ----------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    return search_impl("tag:inbox", discover_accounts())
+
+
+@app.route("/search")
+def search():
+    return search_impl(request.args.get("q", "tag:inbox"), discover_accounts())
+
+
+def search_impl(query, accounts):
+    try:
+        threads = nm_json("search", "--format=json", "--limit=200", query)
+    except Exception as e:
+        return page("Mail", f"<p>{e}</p>", accounts)
+
+    rows = [
+        f"""
+<a class="thread {'unread' if 'unread' in t.get('tags', []) else ''}"
+href="/thread/{t['thread']}">
+<div class="author">{t.get('authors', '')}</div>
+<div class="subject">{t.get('subject') or '(no subject)'}</div>
+<div class="date">{t.get('date_relative', '')}</div>
+</a>
+"""
+        for t in threads
+    ]
+
+    body = (
+        f"<p><small>{len(threads)} results for <code>{query}</code></small></p>"
+        + ("".join(rows) or "<p>No mail found.</p>")
+    )
+    return page("Mail", body, accounts)
+
+
+@app.route("/thread/<thread_id>")
+def thread_view(thread_id):
+    accounts = discover_accounts()
+
+    try:
+        tree = nm_json("show", "--format=json", "--body=false", f"thread:{thread_id}")
+    except Exception as e:
+        return page("Thread", f"<p>{e}</p>", accounts)
+
+    ids = []
+
+    def walk(nodes):
+        for n in nodes:
+            if isinstance(n, list):
+                walk(n)
+            elif isinstance(n, dict):
+                ids.append(n["id"])
+                walk(n.get("replies") or [])
+
+    walk(tree)
+
+    html_parts = []
+
+    for mid in ids:
+        try:
+            msg = load_message(mid)
+        except Exception as e:
+            html_parts.append(f"<p>{e}</p>")
+            continue
+
+        (body, _), files = extract_body_and_attachments(msg)
+
+        attach = ""
+        if files:
+            chips = "".join(
+                f'<a href="/message/{mid}/attachment/{i}">📎 {name}</a>'
+                for i, name, _ in files
+            )
+            attach = f'<div class="attach">{chips}</div>'
+
+        html_parts.append(f"""
+<div class="msg">
+<div class="msghdr">
+<h3 style="margin:0">{msg.get("Subject", "(no subject)")}</h3>
+<small>
+<b>To</b><br>{recipient_email(msg)}
+<br><br>
+<b>From</b><br>{sender_full(msg)}
+<br><br>
+<b>Date</b><br>{msg.get("Date", "")}
+</small>
+</div>
+<div class="msgbody">
+<iframe sandbox="allow-same-origin" onload="fitFrame(this)" srcdoc="{html_attr_escape(body)}"></iframe>
+</div>
+{attach}
+</div>
+""")
+
+    # Batched: one notmuch call for the whole thread instead of one per message
+    if ids:
+        try:
+            id_query = " or ".join(f"id:{mid}" for mid in ids)
+            nm_run("tag", "-unread", "--", f"({id_query})")
+        except Exception:
+            pass
+
+    return page("Thread", "".join(html_parts), accounts)
+
+
+@app.route("/message/<mid>/attachment/<int:index>")
+def attachment(mid, index):
+    msg = load_message(mid)
+    parts = list(msg.walk())
+    if index >= len(parts):
+        abort(404)
+    part = parts[index]
+    data = part.get_payload(decode=True)
+    if data is None:
+        abort(404)
+    return Response(
+        data,
+        mimetype=part.get_content_type(),
+        headers={
+            "Content-Disposition": f'attachment; filename="{part.get_filename() or "attachment"}"'
+        },
+    )
+
+
+@app.route("/sync", methods=["POST"])
+def sync():
+    run_sync()
+    return {"started": True}
+
+
+@app.route("/sync/status")
+def sync_status():
+    return {"running": _sync_state["running"], "ok": _sync_state["ok"]}
+
+
+# ----------------------------------------------------------------------
+# gzip compression for text responses
+# ----------------------------------------------------------------------
+
+@app.after_request
+def compress(resp):
+    accept_enc = request.headers.get("Accept-Encoding", "")
+    if (
+        "gzip" not in accept_enc
+        or resp.direct_passthrough
+        or resp.content_length is not None
+        and resp.content_length < 500
+        or "text" not in (resp.mimetype or "")
+        and "javascript" not in (resp.mimetype or "")
+        and "json" not in (resp.mimetype or "")
+    ):
+        return resp
+
+    buf = io.BytesIO()
+    with gzip.GzipFile(mode="wb", fileobj=buf, compresslevel=6) as gz:
+        gz.write(resp.get_data())
+    resp.set_data(buf.getvalue())
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers["Content-Length"] = str(len(resp.get_data()))
+    return resp
+
+
+# ----------------------------------------------------------------------
+# Entry point
+# ----------------------------------------------------------------------
+
+if __name__ == "__main__":
+    print("Accounts:", discover_accounts(force=True))
+
+    try:
+        from waitress import serve
+        # threads: a few workers is plenty for a single-user mail UI,
+        # and keeps memory low on-device
+        serve(app, host=HOST, port=PORT, threads=4)
+    except ImportError:
+        print("waitress not installed — falling back to Flask dev server.")
+        print("For real speed, run: pip install waitress")
+        app.run(host=HOST, port=PORT, debug=False, threaded=True)
+

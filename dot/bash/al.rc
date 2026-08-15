@@ -1,0 +1,48 @@
+alias start='time bash -i -c exit'
+
+# Eza file listing (modern ls replacement)
+alias cdd='cd ..'
+alias la='eza -Alh --icons'
+alias ls='eza -aFh --icons --color=always'
+alias lt='eza -aT --icons'
+alias ltd='eza -aT -D'
+
+alias cl='clear'
+alias ex='exit'
+
+# git
+alias pu='git push origin --mirror --force'
+
+# Tmux configuration
+alias tm='tmux'
+alias tma='tmux attach'
+
+
+alias cle='apt autoremove -y && apt clean'
+alias upd='pkg update && pkg upgrade -y'
+alias pkgs='apt-mark showmanual'
+
+# Backup
+
+alias ba='termux-backup /storage/emulated/0/0-main/snap/termux-pkg.tar && tar -cf /storage/emulated/0/0-main/snap/termux-backup.tar -C /data/data/com.termux/files ./home'
+
+# termux restore
+# termux-restore /storage/emulated/0/0-main/snap/termux-pkg.tar && tar -xf /storage/emulated/0/0-main/snap/termux-backup.tar -C /data/data/com.termux/files
+
+
+# copyparty file share on local ip
+alias fibr='copyparty -i 0.0.0.0 -p 3923 \
+  -v $HOME::A:c,dots,dotsrch \
+  --see-dots \
+  -z'
+
+# fuzzy find files with names without searching contents in them with rg
+
+alias ff='rg --files --hidden --glob "!.git" | fzf --preview "bat --style=numbers --color=always {}" --bind "tab:toggle-preview" --bind "ctrl-f:change-preview-window(right:90%|right:50%)" --preview-window "right:50%:wrap" | xargs -r $EDITOR'
+
+# memos run
+alias mem='memos --data ~/.local/dot/memos --addr 127.0.0.1 --port 8083'
+
+
+
+

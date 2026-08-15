@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# using ffmpeg pkg to remove certain audio, subtitles, etc e.g. Dark S1 i.e. 10 episodes
+
+# --- Config ---
+WORK_DIR="/storage/emulated/0/Download/d17j/"
+LOG_FILE="$WORK_DIR/processing_log.json"
+TMP_DIR="$HOME/.tmp_ffmpeg_process"  # Use Termux private storage
+
+# Create temp directory
+mkdir -p "$TMP_DIR"
+
+# Initialize JSON log
+echo '{"success": [], "failed": []}' > "$LOG_FILE"
+
+# Process files 1.mkv to 10.mkv
+for i in {1..8}; do
+    INPUT_FILE="$WORK_DIR/$i.mkv"
+    OUTPUT_FILE="$WORK_DIR/1_$i.mkv"
+    
+    echo "Processing $INPUT_FILE..."
+    
+    # Run FFmpeg command
+    if ffmpeg -i "$INPUT_FILE" -map 0:0 -map 0:1 -map 0:7 -c copy "$OUTPUT_FILE" -y 2> "$TMP_DIR/ffmpeg_error.log"; then
+        # Success
+        echo "✓ Success: $INPUT_FILE → $OUTPUT_FILE"
+        jq --arg input "$INPUT_FILE" --arg output "$OUTPUT_FILE" \
+           '.success += [{"input": $input, "output": $output}]' \
+           "$LOG_FILE" > "$TMP_DIR/tmp_log.json" && mv "$TMP_DIR/tmp_log.json" "$LOG_FILE"
+    else
+        # Failure
+        ERROR_MSG=$(tr -d '\n' < "$TMP_DIR/ffmpeg_error.log" | tr '"' "'" | head -c 200)
+        echo "✗ Failed: $INPUT_FILE (Error: ${ERROR_MSG:-Unknown error})"
+        jq --arg input "$INPUT_FILE" --arg error "${ERROR_MSG:-Unknown error}" \
+           '.failed += [{"input": $input, "error": $error}]' \
+           "$LOG_FILE" > "$TMP_DIR/tmp_log.json" && mv "$TMP_DIR/tmp_log.json" "$LOG_FILE"
+    fi
+done
+
+# Cleanup
+rm -rf "$TMP_DIR"
+
+echo -e "\nProcessing complete. Results logged to:"
+echo "$LOG_FILE"

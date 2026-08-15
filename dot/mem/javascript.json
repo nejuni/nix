@@ -1,0 +1,539 @@
+(() => {
+  "use strict";
+
+  const PANEL_ID = "memos-search-jump-panel";
+  const STYLE_ID = "memos-search-jump-style";
+  const SEARCH_KEY = "memos-last-search";
+
+  let matches = [];
+  let current = 0;
+  let lastScanned = "";
+  let timer = null;
+  // FIX: this was read in setInterval() below but never declared,
+  // which threw a ReferenceError on every tick and silently broke
+  // SPA navigation detection.
+  let lastURL = location.href;
+
+  /* =========================================================
+     DEBUG MODE
+     Toggle from the console with:
+       window.__memosSearchJump.debug(true)
+     Then re-search to see step-by-step logs.
+     ========================================================= */
+
+  let DEBUG = false;
+
+  function log(...args) {
+    if (DEBUG) console.log("[Memos Search Jump]", ...args);
+  }
+
+  /* =========================================================
+     ONLY RUN ON A MEMO DETAIL URL
+
+     /memos/6HfGTGvnXy2bdwit5gfaLc
+     ========================================================= */
+
+  function isMemoDetailPage() {
+    return /^\/memos\/[^/]+\/?$/.test(location.pathname);
+  }
+
+  /* =========================================================
+     Find Memos search input
+     ========================================================= */
+
+  function getSearchInput() {
+    return [...document.querySelectorAll("input")].find(input => {
+      const text = [
+        input.placeholder,
+        input.getAttribute("aria-label"),
+        input.getAttribute("name"),
+        input.getAttribute("role"),
+        input.type
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return text.includes("search");
+    });
+  }
+
+  function watchSearch() {
+    const input = getSearchInput();
+
+    if (!input || input.dataset.searchJump) {
+      return;
+    }
+
+    input.dataset.searchJump = "1";
+
+    const save = () => {
+      const value = input.value.trim();
+
+      if (value) {
+        sessionStorage.setItem(SEARCH_KEY, value);
+      }
+    };
+
+    input.addEventListener("input", save);
+    input.addEventListener("change", save);
+    input.addEventListener("keyup", save);
+  }
+
+  /* =========================================================
+     Find the actual memo content
+
+     STRATEGY (in order):
+     1. Known/likely class-name patterns (fast path, works today).
+     2. Class-name-INDEPENDENT fallback: score every reasonably
+        sized visible block by how much of its own direct text it
+        holds, ignoring UI chrome. This keeps working even if
+        Memos renames/hashes its CSS classes in a future release.
+     ========================================================= */
+
+  function isChrome(el) {
+    // Elements that are structurally "app UI", not memo content.
+    if (el.id === PANEL_ID || el.closest(`#${PANEL_ID}`)) return true;
+    if (el.closest("nav, header, aside, footer")) return true;
+    if (el.closest("[role='navigation'], [role='banner'], [role='complementary']")) return true;
+    if (el.closest("button, a, input, textarea, select")) return true;
+    return false;
+  }
+
+  function isVisible(el) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 250 || rect.height < 50) return false;
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    return true;
+  }
+
+  function getMemoContentByClassHints() {
+    const candidates = [
+      ...document.querySelectorAll(
+        [
+          '[class*="markdown"]',
+          '[class*="Markdown"]',
+          '[class*="memo-content"]',
+          '[class*="memoContent"]',
+          '[data-testid*="memo"]'
+        ].join(",")
+      )
+    ];
+
+    const usable = candidates.filter(el => isVisible(el) && !isChrome(el));
+
+    usable.sort((a, b) => {
+      const areaA = a.getBoundingClientRect().width * a.getBoundingClientRect().height;
+      const areaB = b.getBoundingClientRect().width * b.getBoundingClientRect().height;
+      return areaB - areaA;
+    });
+
+    return usable[0] || null;
+  }
+
+  function directTextLength(el) {
+    // Text belonging to this element itself, not re-counted from
+    // children, so a wrapper <div> doesn't just inherit its
+    // children's score and outrank the real content block.
+    let len = 0;
+    for (const node of el.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        len += node.nodeValue.trim().length;
+      }
+    }
+    return len;
+  }
+
+  function totalTextLength(el) {
+    return (el.innerText || el.textContent || "").trim().length;
+  }
+
+  function getMemoContentByTextDensity() {
+    // Look at reasonably-sized block-level elements anywhere in
+    // the document, score them by how much readable text they
+    // contain, and prefer the smallest element that still holds
+    // most of the memo's text (so we land on the actual content
+    // container, not <body> or a huge outer wrapper).
+    const all = [...document.querySelectorAll("div, article, section, main")];
+
+    let best = null;
+    let bestScore = 0;
+
+    for (const el of all) {
+      if (!isVisible(el) || isChrome(el)) continue;
+
+      const total = totalTextLength(el);
+      if (total < 20) continue;
+
+      // Prefer elements where a good chunk of text lives directly
+      // in child paragraphs/spans rather than in one more nested
+      // wrapper below this one.
+      const childBlockCount = el.querySelectorAll(
+        "p, span, li, h1, h2, h3, h4, code, pre"
+      ).length;
+
+      const rect = el.getBoundingClientRect();
+      const area = rect.width * rect.height;
+
+      // Smaller bounding area for similar text = tighter fit
+      // around the real content, so we divide text by a mild
+      // area penalty instead of just taking the biggest box.
+      const score = total * (1 + Math.min(childBlockCount, 20) / 20) / Math.sqrt(area || 1);
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+
+    return best;
+  }
+
+  function getMemoContent() {
+    const viaClass = getMemoContentByClassHints();
+    if (viaClass) {
+      log("content found via class hints:", viaClass);
+      return viaClass;
+    }
+
+    const viaDensity = getMemoContentByTextDensity();
+    if (viaDensity) {
+      log("content found via text density fallback:", viaDensity);
+    } else {
+      log("content NOT FOUND by either strategy");
+    }
+    return viaDensity;
+  }
+
+  /* =========================================================
+     Find text occurrences INSIDE ONE MEMO
+     ========================================================= */
+
+  function findMatches(root, query) {
+    const result = [];
+
+    if (!root || !query) {
+      return result;
+    }
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+
+        if (!parent) return NodeFilter.FILTER_REJECT;
+
+        const tag = parent.tagName;
+
+        if (["SCRIPT", "STYLE", "NOSCRIPT", "BUTTON", "INPUT", "TEXTAREA"].includes(tag)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    const needle = query.toLowerCase();
+    let node;
+
+    while ((node = walker.nextNode())) {
+      const text = node.nodeValue;
+      const lower = text.toLowerCase();
+      let position = 0;
+
+      while (true) {
+        const found = lower.indexOf(needle, position);
+        if (found === -1) break;
+
+        result.push({ node, start: found, end: found + query.length });
+        position = found + Math.max(query.length, 1);
+      }
+    }
+
+    return result;
+  }
+
+  /* =========================================================
+     Highlight current match
+     ========================================================= */
+
+  function highlight(index) {
+    if (!matches.length) return;
+
+    current = (index + matches.length) % matches.length;
+    const match = matches[current];
+
+    try {
+      const range = document.createRange();
+      range.setStart(match.node, match.start);
+      range.setEnd(match.node, match.end);
+
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      const rect = range.getBoundingClientRect();
+      const target = window.scrollY + rect.top - window.innerHeight / 2 + rect.height / 2;
+
+      window.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+
+      updateCounter();
+    } catch (e) {
+      console.debug("Memos Search Jump:", e);
+    }
+  }
+
+  /* =========================================================
+     Panel
+     ========================================================= */
+
+  function createPanel() {
+    if (document.getElementById(PANEL_ID)) return;
+
+    const panel = document.createElement("div");
+    panel.id = PANEL_ID;
+
+    panel.innerHTML = `
+      <button id="memos-search-prev" type="button" aria-label="Previous match">↑</button>
+      <span id="memos-search-count">0 / 0</span>
+      <button id="memos-search-next" type="button" aria-label="Next match">↓</button>
+    `;
+
+    document.body.appendChild(panel);
+
+    document.getElementById("memos-search-prev").onclick = () => highlight(current - 1);
+    document.getElementById("memos-search-next").onclick = () => highlight(current + 1);
+  }
+
+  function updateCounter() {
+    const panel = document.getElementById(PANEL_ID);
+    const counter = document.getElementById("memos-search-count");
+
+    if (!panel || !counter) return;
+
+    if (!matches.length) {
+      panel.style.display = "none";
+      return;
+    }
+
+    panel.style.display = "flex";
+    counter.textContent = `${current + 1} / ${matches.length}`;
+  }
+
+  /* =========================================================
+     Scan selected memo
+     ========================================================= */
+
+  function scanMemo() {
+    try {
+      if (!isMemoDetailPage()) {
+        log("not a memo detail page, path:", location.pathname);
+        matches = [];
+        const panel = document.getElementById(PANEL_ID);
+        if (panel) panel.style.display = "none";
+        return;
+      }
+
+      const query = sessionStorage.getItem(SEARCH_KEY);
+      if (!query) {
+        log("no saved search query in sessionStorage key:", SEARCH_KEY);
+        return;
+      }
+      log("query:", query);
+
+      const root = getMemoContent();
+      if (!root) return;
+
+      const scanKey = location.pathname + "|" + query;
+      if (scanKey === lastScanned) {
+        log("already scanned this path+query, skipping");
+        return;
+      }
+
+      const found = findMatches(root, query);
+      log("matches found:", found.length);
+
+      if (!found.length) {
+        matches = [];
+        updateCounter();
+        return;
+      }
+
+      matches = found;
+      current = 0;
+      lastScanned = scanKey;
+
+      createPanel();
+      updateCounter();
+
+      setTimeout(() => {
+        if (matches.length && isMemoDetailPage()) {
+          highlight(0);
+        }
+      }, 150);
+    } catch (e) {
+      // Never let a future Memos DOM change kill the whole script.
+      console.debug("Memos Search Jump scan failed:", e);
+    }
+  }
+
+  /* =========================================================
+     CSS
+     ========================================================= */
+
+  function addCSS() {
+    if (document.getElementById(STYLE_ID)) return;
+
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+
+    style.textContent = `
+      #${PANEL_ID} {
+        position: fixed;
+        right: 16px;
+        bottom: 90px;
+        z-index: 999999;
+        display: none;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 8px;
+        border-radius: 14px;
+        background: rgba(45,45,45,.90);
+        color: white;
+        box-shadow: 0 5px 20px rgba(0,0,0,.30);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+      }
+
+      #${PANEL_ID} button {
+        width: 38px;
+        height: 38px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: white;
+        font-size: 23px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      #${PANEL_ID} button:active {
+        background: rgba(255,255,255,.18);
+        transform: scale(.92);
+      }
+
+      #memos-search-count {
+        min-width: 62px;
+        text-align: center;
+        font-size: 14px;
+        user-select: none;
+      }
+
+      pre {
+        white-space: pre-wrap !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
+        overflow-x: hidden !important;
+      }
+
+      @media (max-width: 600px) {
+        #${PANEL_ID} {
+          right: 12px;
+          bottom: 80px;
+        }
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
+  /* =========================================================
+     Init
+     ========================================================= */
+
+  function init() {
+    try {
+      addCSS();
+      createPanel();
+      watchSearch();
+
+      clearTimeout(timer);
+      timer = setTimeout(scanMemo, 500);
+    } catch (e) {
+      console.debug("Memos Search Jump init failed:", e);
+    }
+  }
+
+  init();
+
+  /* =========================================================
+     Memos is a SPA
+     ========================================================= */
+
+  const observer = new MutationObserver(() => {
+    try {
+      watchSearch();
+      clearTimeout(timer);
+      timer = setTimeout(scanMemo, 500);
+    } catch (e) {
+      console.debug("Memos Search Jump observer failed:", e);
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  /*
+   * Detect URL changes.
+   */
+
+  setInterval(() => {
+    if (location.href !== lastURL) {
+      lastURL = location.href;
+      matches = [];
+      current = 0;
+      lastScanned = "";
+      init();
+    }
+  }, 300);
+
+  /* =========================================================
+     Console debug API — for manual poking when something breaks:
+
+       window.__memosSearchJump.debug(true)   // turn logging on
+       window.__memosSearchJump.state()        // inspect current state
+       window.__memosSearchJump.testContent()  // see what content
+                                                // element it's picking
+       window.__memosSearchJump.rescan()       // force a re-scan now
+     ========================================================= */
+
+  window.__memosSearchJump = {
+    debug(on) {
+      DEBUG = !!on;
+      console.log("[Memos Search Jump] debug:", DEBUG);
+    },
+    state() {
+      return {
+        isMemoDetailPage: isMemoDetailPage(),
+        savedQuery: sessionStorage.getItem(SEARCH_KEY),
+        matchCount: matches.length,
+        current,
+        lastScanned
+      };
+    },
+    testContent() {
+      const el = getMemoContent();
+      if (el) el.style.outline = "3px solid red";
+      return el;
+    },
+    rescan() {
+      lastScanned = "";
+      scanMemo();
+    }
+  };
+
+})();

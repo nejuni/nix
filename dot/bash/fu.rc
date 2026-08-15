@@ -1,0 +1,76 @@
+#fzf functions
+
+# fuzzy find history execute with enter edit with tab with Ctrl+R
+
+fh() {
+    local selected key cmd tmpfile
+    tmpfile="$(mktemp "$HOME/fh_history.XXXXXX")"
+
+    history | tac | sed 's/^[ ]*[0-9]*[ ]*//' | awk '!seen[$0]++' > "$tmpfile"
+
+    selected=$(
+        fzf --no-sort \
+            --height=100% \
+            --prompt='History> ' \
+            --preview-window='down:3:wrap' \
+            --preview 'echo {}' \
+            --bind "change:reload:rg --no-heading --no-line-number --color=never --ignore-case {q} $tmpfile || true" \
+            --ansi \
+            --expect=tab \
+            < "$tmpfile"
+    )
+
+    rm -f "$tmpfile"
+
+    if [[ -n "$selected" ]]; then
+        key=$(head -n 1 <<< "$selected")
+        cmd=$(tail -n +2 <<< "$selected")
+        [[ -z "$cmd" ]] && cmd="$key" && key=""
+
+        if [[ "$key" == "tab" ]]; then
+            read -e -i "$cmd" -p "edit> " cmd
+        fi
+
+        if [[ -n "$cmd" ]]; then
+            # Skip recording if it matches HISTIGNORE-style secret patterns
+            local skip=0
+            local pattern
+            IFS=':' read -ra _patterns <<< "${HISTIGNORE:-*SECRET*:*API_KEY*:*TOKEN*:*PASSWORD*:*Authorization*}"
+            for pattern in "${_patterns[@]}"; do
+                [[ "$cmd" == $pattern ]] && skip=1 && break
+            done
+
+            if [[ "$skip" -eq 0 ]]; then
+                history -s -- "$cmd"
+                history -a
+            fi
+            eval "$cmd"
+        fi
+    fi
+}
+
+
+# Git shortcuts
+gco() {
+    git add .
+    git commit -m "$1"
+}
+
+# find file contents with rg
+
+gf() {
+  local rg_cmd='rg --color=always --line-number --no-heading --smart-case --hidden -- {q} . || true'
+  fzf --ansi \
+      --disabled \
+      --query "${*:-}" \
+      --bind "start:reload:$rg_cmd" \
+      --bind "change:reload:sleep 0.1; $rg_cmd" \
+      --color "hl:-1:underline,hl+:-1:underline:reverse" \
+      --delimiter : \
+      --preview 'bat --color=always {1} --highlight-line {2}' \
+      --preview-window 'right:60%:+{2}+3/3:~3' \
+      --bind 'tab:toggle-preview' \
+      --bind 'ctrl-f:change-preview-window(right:90%|right:60%)' \
+      --bind 'enter:become(nano +{2} {1})'
+}
+

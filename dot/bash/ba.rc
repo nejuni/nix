@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+# Interactive shell check
+iatest=$(expr index "$-" i)
+
+# Source aliases
+[[ -f ~/.config/bash/al.rc ]] && . ~/.config/bash/al.rc
+
+# Source functions
+[[ -f ~/.config/bash/fu.rc ]] && . ~/.config/bash/fu.rc
+

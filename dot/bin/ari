@@ -1,0 +1,31 @@
+#!/bin/bash
+
+# Ask user for download URL
+read -p "Enter the download URL: " URL
+
+# Verify URL was provided
+if [ -z "$URL" ]; then
+    echo "Error: No URL provided. Exiting."
+    exit 1
+fi
+
+
+DOWNLOAD_DIR="$HOME/storage/downloads"
+
+# Aria2 parameters
+THREADS=16
+SPLIT=16
+MIN_SPLIT_SIZE="2M"
+
+# Start download
+aria2c \
+  --dir="$DOWNLOAD_DIR" \
+  --max-connection-per-server="$THREADS" \
+  --split="$SPLIT" \
+  --min-split-size="$MIN_SPLIT_SIZE" \
+  --file-allocation=none \
+  --continue=true \
+  --user-agent="Mozilla/5.0" \
+  "$URL"
+
+echo "Download complete! File saved to: $DOWNLOAD_DIR"

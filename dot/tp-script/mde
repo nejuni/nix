@@ -1,0 +1,597 @@
+#!/usr/bin/env python3
+
+# Google mail empty
+
+import imaplib
+import os
+import re
+import sys
+import time
+
+
+CONFIG_PATH = "~/.config/isyncrc"
+IMAP_PORT = 993
+
+
+# ------------------------------------------------------------
+# CONFIG PARSER
+# ------------------------------------------------------------
+
+def parse_isyncrc(file_path):
+    """Read IMAPAccount entries from ~/.config/isyncrc."""
+
+    path = os.path.expanduser(file_path)
+
+    if not os.path.isfile(path):
+        print(f"ERROR: Config not found: {path}")
+        sys.exit(1)
+
+    accounts = []
+    current = None
+
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+
+            if not line or line.startswith("#"):
+                continue
+
+            m = re.match(r"^IMAPAccount\s+(.+)$", line)
+
+            if m:
+                if current:
+                    accounts.append(current)
+
+                current = {
+                    "name": m.group(1).strip(),
+                    "host": "imap.gmail.com",
+                    "user": None,
+                    "password": None,
+                }
+                continue
+
+            if current is None:
+                continue
+
+            if line.startswith("Host "):
+                current["host"] = line[5:].strip().strip('"')
+
+            elif line.startswith("User "):
+                current["user"] = line[5:].strip().strip('"')
+
+            elif line.startswith("Pass "):
+                current["password"] = line[5:].strip().strip('"')
+
+    if current:
+        accounts.append(current)
+
+    return [
+        account
+        for account in accounts
+        if account["user"] and account["password"]
+    ]
+
+
+def select_accounts(accounts, target):
+    """
+    Filter accounts by IMAPAccount name (exact match preferred,
+    falls back to case-insensitive substring match against the
+    account name or the User field).
+    """
+
+    if not target:
+        return accounts
+
+    exact = [a for a in accounts if a["name"] == target]
+
+    if exact:
+        return exact
+
+    target_lower = target.lower()
+
+    matches = [
+        a for a in accounts
+        if target_lower in a["name"].lower()
+        or (a["user"] and target_lower in a["user"].lower())
+    ]
+
+    return matches
+
+
+# ------------------------------------------------------------
+# IMAP HELPERS
+# ------------------------------------------------------------
+
+def quote_mailbox(name):
+    """Safely quote an IMAP mailbox name."""
+
+    name = name.replace("\\", "\\\\")
+    name = name.replace('"', '\\"')
+
+    return f'"{name}"'
+
+
+def get_folders(mail):
+    """Return selectable IMAP folders."""
+
+    status, data = mail.list()
+
+    if status != "OK" or not data:
+        return []
+
+    folders = []
+
+    pattern = re.compile(
+        r'^\((.*?)\)\s+(?:"[^"]*"|NIL)\s+(?:"(.*)"|([^\s]+))$'
+    )
+
+    for raw in data:
+        if not raw:
+            continue
+
+        line = raw.decode("utf-8", errors="replace")
+
+        match = pattern.match(line)
+
+        if not match:
+            continue
+
+        flags = match.group(1)
+        folder = match.group(2) or match.group(3)
+
+        if "\\Noselect" in flags:
+            continue
+
+        if folder:
+            folders.append(folder)
+
+    return folders
+
+
+def find_special_folder(folders, candidates):
+    """Find Gmail special folder from possible localized/naming variants."""
+
+    for candidate in candidates:
+        if candidate in folders:
+            return candidate
+
+    return None
+
+
+def get_message_count(mail, folder):
+    """Return number of messages currently visible in a mailbox."""
+
+    status, data = mail.select(quote_mailbox(folder), readonly=True)
+
+    if status != "OK":
+        return None
+
+    try:
+        return int(data[0])
+    except (ValueError, TypeError, IndexError):
+        return None
+
+
+def search_all(mail):
+    """Return all message sequence IDs in currently selected mailbox."""
+
+    status, data = mail.search(None, "ALL")
+
+    if status != "OK" or not data or not data[0]:
+        return []
+
+    return data[0].split()
+
+
+# ------------------------------------------------------------
+# GMAIL DELETION
+# ------------------------------------------------------------
+
+def move_all_to_trash(mail, source_folder, trash_folder):
+    """
+    Move all messages from source_folder to Gmail Trash.
+
+    COPY to Trash first, then mark the source messages deleted and EXPUNGE.
+    """
+
+    if source_folder == trash_folder:
+        return 0
+
+    print(f"\nProcessing: {source_folder}")
+
+    status, _ = mail.select(quote_mailbox(source_folder))
+
+    if status != "OK":
+        print("  ! Cannot select folder.")
+        return 0
+
+    ids = search_all(mail)
+
+    if not ids:
+        print("  - Empty")
+        return 0
+
+    count = len(ids)
+
+    print(f"  -> Found {count} message(s)")
+    print(f"  -> Moving to {trash_folder}...")
+
+    sequence = b",".join(ids)
+
+    status, _ = mail.copy(
+        sequence,
+        quote_mailbox(trash_folder)
+    )
+
+    if status != "OK":
+        print("  ! COPY to Trash failed.")
+        return 0
+
+    status, _ = mail.store(
+        sequence,
+        "+FLAGS.SILENT",
+        r"(\Deleted)"
+    )
+
+    if status != "OK":
+        print("  ! Could not mark source messages deleted.")
+        return 0
+
+    status, _ = mail.expunge()
+
+    if status != "OK":
+        print("  ! EXPUNGE failed.")
+        return 0
+
+    print(f"  ✓ Moved {count} message(s) to Trash")
+
+    return count
+
+
+def empty_trash(mail, trash_folder):
+    """Permanently delete everything currently in Gmail Trash."""
+
+    print("\n" + "=" * 65)
+    print("PERMANENTLY EMPTYING GMAIL TRASH")
+    print("=" * 65)
+
+    status, _ = mail.select(quote_mailbox(trash_folder))
+
+    if status != "OK":
+        print(f"  ! Cannot select {trash_folder}")
+        return 0
+
+    ids = search_all(mail)
+
+    if not ids:
+        print("  - Trash already empty.")
+        return 0
+
+    count = len(ids)
+
+    print(f"  -> Trash contains {count} message(s)")
+    print("  -> Permanently deleting...")
+
+    sequence = b",".join(ids)
+
+    status, _ = mail.store(
+        sequence,
+        "+FLAGS.SILENT",
+        r"(\Deleted)"
+    )
+
+    if status != "OK":
+        print("  ! Failed to mark Trash messages deleted.")
+        return 0
+
+    status, _ = mail.expunge()
+
+    if status != "OK":
+        print("  ! EXPUNGE failed.")
+        return 0
+
+    print(f"  ✓ Permanently deleted {count} Trash message(s)")
+
+    return count
+
+
+# ------------------------------------------------------------
+# VERIFICATION
+# ------------------------------------------------------------
+
+def verify_account(mail, folders):
+    """Display counts after deletion."""
+
+    print("\n" + "=" * 65)
+    print("VERIFYING REMOTE MAILBOX")
+    print("=" * 65)
+
+    remaining = 0
+
+    for folder in folders:
+        count = get_message_count(mail, folder)
+
+        if count is None:
+            print(f"  ? {folder}")
+            continue
+
+        print(f"  {folder}: {count}")
+
+        # Don't sum Gmail label counts because messages can appear
+        # under multiple labels.
+        if count > 0:
+            remaining += 1
+
+    if remaining == 0:
+        print("\n✓ All selectable Gmail folders report 0 messages.")
+        return True
+
+    print(
+        f"\n! {remaining} folder(s) still contain messages."
+    )
+
+    return False
+
+
+# ------------------------------------------------------------
+# ACCOUNT PROCESSING
+# ------------------------------------------------------------
+
+def process_account(account, index, total):
+    user = account["user"]
+    password = account["password"]
+    host = account["host"]
+
+    print()
+    print("=" * 65)
+    print(f"[{index}/{total}] ACCOUNT: {user}")
+    print(f"SERVER: {host}:{IMAP_PORT}")
+    print("=" * 65)
+
+    confirm = input(
+        f"PERMANENTLY DELETE ALL GMAIL for {user}? "
+        "Type WIPE: "
+    ).strip().upper()
+
+    if confirm != "WIPE":
+        print(f"Skipping {user}.")
+        return
+
+    mail = None
+
+    try:
+        print("\nConnecting...")
+
+        mail = imaplib.IMAP4_SSL(
+            host,
+            IMAP_PORT,
+            timeout=30
+        )
+
+        print("Logging in...")
+
+        mail.login(user, password)
+
+        print("✓ Login successful")
+
+        folders = get_folders(mail)
+
+        print(f"\nFound {len(folders)} selectable folder(s):")
+
+        for folder in folders:
+            print(f"  - {folder}")
+
+        # Gmail special folders
+
+        all_mail = find_special_folder(
+            folders,
+            [
+                "[Gmail]/All Mail",
+                "[Google Mail]/All Mail",
+                "All Mail",
+            ],
+        )
+
+        trash = find_special_folder(
+            folders,
+            [
+                "[Gmail]/Trash",
+                "[Google Mail]/Trash",
+                "[Gmail]/Bin",
+                "[Google Mail]/Bin",
+                "Trash",
+                "Bin",
+            ],
+        )
+
+        spam = find_special_folder(
+            folders,
+            [
+                "[Gmail]/Spam",
+                "[Google Mail]/Spam",
+                "Spam",
+            ],
+        )
+
+        if not trash:
+            print("\nERROR: Gmail Trash folder was not found.")
+            print("Aborting this account for safety.")
+            return
+
+        print(f"\nGmail Trash: {trash}")
+
+        if all_mail:
+            print(f"Gmail All Mail: {all_mail}")
+
+        if spam:
+            print(f"Gmail Spam: {spam}")
+
+        # ----------------------------------------------------
+        # STEP 1
+        #
+        # All Mail represents the main Gmail message store.
+        # Move its contents to Trash first.
+        # ----------------------------------------------------
+
+        if all_mail:
+            print("\n[1] Clearing All Mail")
+
+            move_all_to_trash(
+                mail,
+                all_mail,
+                trash
+            )
+
+        else:
+            # Fallback for unusual Gmail configurations.
+            print("\n[1] All Mail unavailable.")
+            print("Clearing normal folders individually.")
+
+            skip = {
+                trash,
+                spam,
+            }
+
+            for folder in folders:
+                if folder not in skip:
+                    move_all_to_trash(
+                        mail,
+                        folder,
+                        trash
+                    )
+
+        # ----------------------------------------------------
+        # STEP 2
+        #
+        # Spam isn't necessarily represented the same way as
+        # normal All Mail content, so explicitly move it.
+        # ----------------------------------------------------
+
+        print("\n[2] Clearing Spam")
+
+        if spam:
+            move_all_to_trash(
+                mail,
+                spam,
+                trash
+            )
+        else:
+            print("  - Spam folder unavailable")
+
+        # Gmail may need a moment to update labels/views.
+
+        time.sleep(1)
+
+        # ----------------------------------------------------
+        # STEP 3
+        #
+        # Empty Trash permanently.
+        # ----------------------------------------------------
+
+        print("\n[3] Emptying Trash")
+
+        empty_trash(
+            mail,
+            trash
+        )
+
+        time.sleep(1)
+
+        # ----------------------------------------------------
+        # STEP 4
+        #
+        # Fetch folder list again and verify.
+        # ----------------------------------------------------
+
+        print("\n[4] Final verification")
+
+        folders = get_folders(mail)
+
+        clean = verify_account(
+            mail,
+            folders
+        )
+
+        print()
+        print("-" * 65)
+
+        if clean:
+            print(f"WIPE COMPLETE: {user}")
+            print("Remote Gmail mailbox appears empty.")
+        else:
+            print(f"WIPE INCOMPLETE: {user}")
+            print("Some remote folders still contain messages.")
+
+        print("-" * 65)
+
+    except imaplib.IMAP4.error as e:
+        print(f"\nIMAP ERROR: {e}")
+
+    except (OSError, TimeoutError) as e:
+        print(f"\nNETWORK ERROR: {e}")
+
+    except Exception as e:
+        print(f"\nUNEXPECTED ERROR: {type(e).__name__}: {e}")
+
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+
+
+# ------------------------------------------------------------
+# MAIN
+# ------------------------------------------------------------
+
+def main():
+    # Optional single argument: an IMAPAccount name (or substring of
+    # it / the User field) from ~/.config/isyncrc.
+    #
+    #   mrm.sh aasiji123
+    #
+    # runs only the matching account instead of all 30+.
+    target = sys.argv[1] if len(sys.argv) > 1 else None
+
+    accounts = parse_isyncrc(CONFIG_PATH)
+
+    if not accounts:
+        print("No valid accounts found.")
+        sys.exit(1)
+
+    if target:
+        matches = select_accounts(accounts, target)
+
+        if not matches:
+            print(f"No account matching '{target}' found in {CONFIG_PATH}.")
+            sys.exit(1)
+
+        if len(matches) > 1:
+            print(f"'{target}' matches {len(matches)} accounts, be more specific:")
+            for a in matches:
+                print(f"  - {a['name']} ({a['user']})")
+            sys.exit(1)
+
+        accounts = matches
+
+        print(f"Filtered to 1 account matching '{target}'.")
+
+    print(
+        f"Loaded {len(accounts)} account(s) "
+        f"from {CONFIG_PATH}."
+    )
+
+    for index, account in enumerate(accounts, 1):
+        process_account(
+            account,
+            index,
+            len(accounts)
+        )
+
+    print("\nFinished processing configured accounts.")
+
+
+if __name__ == "__main__":
+    main()
+

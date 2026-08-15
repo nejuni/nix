@@ -1,0 +1,30 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# i= info about process 
+# q= quit the information page 
+# Ctrl+c= quite fully
+
+get_processes() {
+  ps -u "$(whoami)" -o pid,%cpu,%mem,comm | grep -v -e grep -e "$(basename "$0")"
+}
+export -f get_processes
+
+get_info() {
+  local pid=$1
+  echo "PID: $pid"
+  ps -p "$pid" -o pid,ppid,user,%cpu,%mem,vsz,rss,stat,start,time,comm 2>/dev/null
+  echo -e "\nCommand:"
+  ps -p "$pid" -o args --no-headers 2>/dev/null
+  echo -e "\nCWD:"
+  readlink /proc/"$pid"/cwd 2>/dev/null
+}
+export -f get_info
+
+process_manager() {
+  get_processes | fzf \
+    --header-lines=1 \
+    --header='d: kill -9  |  i: info (q to return)  |  Ctrl-C: quit' \
+    --bind 'i:execute(get_info {1} | less)' \
+    --bind 'd:execute-silent(kill -9 {1})+reload(get_processes)'
+}
+
+process_manager

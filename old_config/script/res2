@@ -1,0 +1,281 @@
+#!/bin/bash
+# Restic + rclone REST Server Optimizer (Termux)
+# Fixes 500 Internal Server errors from overloaded rclone serve
+# [0-app1]
+# repository=rest:http://127.0.0.1:8000/0-app/
+# password_file=~/.config/restic/password.txt
+# rclone_remote=gs:your-bucket/0-app
+# description=App backup via rclone REST
+
+set -euo pipefail
+
+CONFIG_FILE="$HOME/.local/conf/restic/repos.conf"
+LOG_DIR="$HOME/log/restic"
+RCLONE_LOG_DIR="$HOME/log/rclone"
+mkdir -p "$LOG_DIR" "$RCLONE_LOG_DIR"
+
+command -v restic >/dev/null || { echo "Error: restic not installed"; exit 1; }
+command -v rclone >/dev/null || { echo "Error: rclone not installed"; exit 1; }
+
+# Help
+if [[ -z "${1:-}" ]] || [[ "$1" == "-h" ]]; then
+    echo "Restic + rclone REST Server (Optimized)"
+    echo "Usage: $0 <profile> [command] [args]"
+    echo ""
+    echo "Automatically manages rclone REST server"
+    echo "Prevents 500 errors with optimized settings"
+    exit 1
+fi
+
+PROFILE="$1"
+shift
+
+# Parse config
+REPO=$(sed -n "/^\[$PROFILE\]/,/^\[/p" "$CONFIG_FILE" | grep '^repository=' | cut -d= -f2)
+PASS_FILE=$(sed -n "/^\[$PROFILE\]/,/^\[/p" "$CONFIG_FILE" | grep '^password_file=' | cut -d= -f2)
+
+[[ -z "$REPO" ]] && { echo "Error: Profile '$PROFILE' not found"; exit 1; }
+[[ -z "$PASS_FILE" ]] && { echo "Error: No password_file"; exit 1; }
+
+PASS_FILE="${PASS_FILE/#\~/$HOME}"
+[[ ! -f "$PASS_FILE" ]] && { echo "Error: Password file not found"; exit 1; }
+
+export RESTIC_REPOSITORY="$REPO"
+export RESTIC_PASSWORD_FILE="$PASS_FILE"
+
+# ============================================================================
+# RCLONE REST SERVER CONFIGURATION
+# ============================================================================
+
+# Check if using rclone REST backend
+if [[ "$REPO" == rest:http://* ]]; then
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "rclone REST mode detected"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # Extract server details
+    SERVER_URL=$(echo "$REPO" | sed 's|rest:||')
+    SERVER_PORT=$(echo "$SERVER_URL" | grep -oP ':\K[0-9]+' || echo "8000")
+    
+    # Check if server is already running
+    if curl -sf "$SERVER_URL" >/dev/null 2>&1; then
+        echo "✓ rclone server already running"
+        SERVER_MANAGED=0
+    else
+        echo "Starting rclone REST server on port $SERVER_PORT..."
+        
+        # Get rclone remote from config (assumes format like "gs:bucket/path")
+        RCLONE_REMOTE=$(sed -n "/^\[$PROFILE\]/,/^\[/p" "$CONFIG_FILE" | grep '^rclone_remote=' | cut -d= -f2)
+        
+        if [[ -z "$RCLONE_REMOTE" ]]; then
+            echo "Error: rclone_remote not configured in [$PROFILE]"
+            echo "Add this line to your config:"
+            echo "  rclone_remote=gdrive:backup-bucket/restic"
+            exit 1
+        fi
+        
+        # ====================================================================
+        # OPTIMIZED RCLONE SERVE SETTINGS (Prevents 500 errors)
+        # ====================================================================
+        
+        RCLONE_LOG="$RCLONE_LOG_DIR/serve_$(date +%Y%m%d_%H%M%S).log"
+        
+        # Start rclone serve with optimized settings
+        rclone serve restic "$RCLONE_REMOTE" \
+            --addr "127.0.0.1:$SERVER_PORT" \
+            --verbose \
+            --log-file "$RCLONE_LOG" \
+            \
+            `# Connection limits to prevent overload` \
+            --max-header-bytes 16384 \
+            --server-read-timeout 1h \
+            --server-write-timeout 1h \
+            \
+            `# Transfer optimization for large files` \
+            --transfers 2 \
+            --checkers 4 \
+            --drive-chunk-size 128M \
+            --buffer-size 128M \
+            \
+            `# API rate limiting (critical for preventing 500s)` \
+            --tpslimit 6 \
+            --tpslimit-burst 15 \
+            --drive-pacer-min-sleep 150ms \
+            --drive-pacer-burst 30 \
+            \
+            `# Retry and reliability` \
+            --retries 15 \
+            --low-level-retries 30 \
+            --timeout 30m \
+            --contimeout 5m \
+            \
+            `# Performance tuning` \
+            --use-mmap=false \
+            --no-traverse \
+            --fast-list=false \
+            \
+            `# Google Drive specific` \
+            --drive-acknowledge-abuse \
+            --drive-keep-revision-forever=false \
+            --drive-stop-on-upload-limit \
+            --drive-stop-on-download-limit \
+            \
+            `# Memory optimization` \
+            --bwlimit 30M \
+            --max-backlog 50000 \
+            & 
+        
+        RCLONE_PID=$!
+        SERVER_MANAGED=1
+        
+        # Wait for server to start
+        echo -n "Waiting for server to be ready"
+        for i in {1..30}; do
+            if curl -sf "$SERVER_URL" >/dev/null 2>&1; then
+                echo " ✓"
+                break
+            fi
+            echo -n "."
+            sleep 1
+            
+            # Check if process died
+            if ! kill -0 $RCLONE_PID 2>/dev/null; then
+                echo " ✗"
+                echo "Error: rclone server failed to start"
+                echo "Last 10 log lines:"
+                tail -n 10 "$RCLONE_LOG"
+                exit 1
+            fi
+        done
+        
+        if ! curl -sf "$SERVER_URL" >/dev/null 2>&1; then
+            echo " ✗ (timeout)"
+            echo "Server did not respond after 30s"
+            kill $RCLONE_PID 2>/dev/null || true
+            exit 1
+        fi
+        
+        echo "✓ rclone server started (PID: $RCLONE_PID)"
+        echo "  Log: $RCLONE_LOG"
+        
+        # Cleanup function
+        cleanup_server() {
+            if [[ $SERVER_MANAGED -eq 1 ]]; then
+                echo ""
+                echo "Stopping rclone server..."
+                kill $RCLONE_PID 2>/dev/null || true
+                wait $RCLONE_PID 2>/dev/null || true
+                echo "✓ Server stopped"
+            fi
+        }
+        trap cleanup_server EXIT INT TERM
+    fi
+    
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+fi
+
+# ============================================================================
+# RESTIC CLIENT OPTIMIZATION (Works with rclone REST)
+# ============================================================================
+
+# Reduce pressure on rclone server
+export RESTIC_PACK_SIZE=128                      # 128MB packs
+export RESTIC_COMPRESSION=auto                   # Auto compression
+export RESTIC_READ_CONCURRENCY=1                 # Single concurrent read
+export RESTIC_CACHE_DIR="$HOME/.cache/restic"
+
+# Limit restic's aggressiveness
+export GOMAXPROCS=2                              # Limit to 2 CPU cores
+export RESTIC_PROGRESS_FPS=1                     # Update progress 1x/sec
+
+mkdir -p "$RESTIC_CACHE_DIR"
+
+# Lower process priority
+renice -n 15 $$ 2>/dev/null || true
+
+# Status
+echo "Profile: $PROFILE"
+echo "Repo: $REPO"
+echo ""
+echo "Configuration:"
+echo "  • rclone: 6 TPS, 128MB chunks, 2 transfers"
+echo "  • restic: 128MB packs, 1 read concurrency"
+echo "  • CPU: Limited to 2 cores, priority 15"
+echo ""
+
+# Acquire wake lock
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock
+    WAKE_LOCK_HELD=1
+else
+    WAKE_LOCK_HELD=0
+fi
+
+cleanup_wake() {
+    if [[ $WAKE_LOCK_HELD -eq 1 ]]; then
+        termux-wake-unlock 2>/dev/null || true
+    fi
+}
+trap cleanup_wake EXIT
+
+# Log file
+LOG_FILE="$LOG_DIR/${PROFILE}_$(date +%Y%m%d_%H%M%S).log"
+
+# Run restic with retry logic
+MAX_RETRIES=3
+RETRY_COUNT=0
+EXIT_CODE=1
+
+echo "Starting operation..."
+echo "Log: $LOG_FILE"
+echo ""
+
+while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
+    if [[ $RETRY_COUNT -gt 0 ]]; then
+        WAIT_TIME=$((60 * RETRY_COUNT))
+        echo ""
+        echo "⏸ Server error detected. Waiting ${WAIT_TIME}s..."
+        sleep "$WAIT_TIME"
+        echo "▶ Retrying ($((RETRY_COUNT + 1))/$MAX_RETRIES)..."
+    fi
+    
+    restic "$@" 2>&1 | tee "$LOG_FILE"
+    EXIT_CODE=${PIPESTATUS[0]}
+    
+    # Check for server errors
+    if [[ $EXIT_CODE -ne 0 ]] && grep -qi "500 Internal Server Error\|unexpected HTTP response" "$LOG_FILE"; then
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        echo "⚠ rclone server overload detected"
+    else
+        break
+    fi
+done
+
+# Results
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+if [[ $EXIT_CODE -eq 0 ]]; then
+    echo "✓ SUCCESS"
+    
+    if [[ "$*" == *"backup"* ]]; then
+        echo ""
+        grep -E "Files:|Added:|processed" "$LOG_FILE" | tail -5 || true
+    fi
+else
+    echo "✗ FAILED (exit code: $EXIT_CODE)"
+    echo ""
+    echo "Last 10 lines:"
+    tail -n 10 "$LOG_FILE"
+    
+    if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
+        echo ""
+        echo "Persistent server errors. Try:"
+        echo "  1. Restart rclone manually with lower settings"
+        echo "  2. Reduce backup size/speed"
+        echo "  3. Check rclone log: $RCLONE_LOG"
+    fi
+fi
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+exit $EXIT_CODE

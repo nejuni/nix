@@ -1,0 +1,12 @@
+pre,
+pre code {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  overflow-x: hidden !important;
+}
+
+code {
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
