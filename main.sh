@@ -23,7 +23,7 @@ rsync -avh ~/.local/share/nix/dot/ ~/.local/dot/
 # Define nix locations used a variable
 export NIX_PATH="$HOME/.local/share/nix"
 export NIX_INSTALL="$NIX_PATH/main-install"
-export NIX_CONF="$HOME/.local/dot"
+export NIX_CONF="$NIX_PATH/dot"
 
 # Source function
 source "$NIX_INSTALL/fu.sh"
