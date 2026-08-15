@@ -2,7 +2,7 @@
 
 export NIX_PATH="$HOME/.local/share/nix"
 export NIX_INSTALL="$NIX_PATH/enc-install"
-export NIX_CONF="$HOME/.local/dot"
+export NIX_CONF="$NIX_PATH/dot"
 
 source "$NIX_INSTALL/fu.sh"
 
