@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
 
-# initial setup    
-termux-setup-storage    
-termux-change-repo   
+# initial setup
+#read -p "[y/n] " ans
+
+#if [[ "$ans" == "y" ]]; then
+#    termux-setup-storage    
+#    termux-change-repo 
+#fi
+termux-setup-storage
+termux-change-repo
 pkg update && pkg upgrade -y    
 pkg install git age tar gum rsync -y   
 
 # main setup
     
-gum spin --spinner dot --spinner.foreground 81 --title "Cloning nix repo..." --title.foreground 254 -- sleep 1
+#gum spin --spinner dot --spinner.foreground 81 --title "Cloning ume repo..." --title.foreground 254 -- sleep 1
 
-rm -rf ~/.local/share/nix
+echo -e "\033[38;5;81mCloning ume repo...\033[0m" && sleep 1
 
+mkdir -p ~/.ume
 # repo clone
-mkdir -p ~/.local/share
-cd ~/.local/share
-git clone -b 0 https://github.com/nejuni/nix.git
-
-mkdir -p ~/.local/dot
-rsync -avh ~/.local/share/nix/dot/ ~/.local/dot/
+rsync -avh /storage/emulated/0/ume/ ~/.ume/
 
 # Define nix locations used a variable
-export NIX_PATH="$HOME/.local/share/nix"
-export NIX_INSTALL="$NIX_PATH/main-install"
+export NIX_PATH="$HOME/.ume"
+export NIX_INSTALL="$NIX_PATH/ins"
 export NIX_CONF="$NIX_PATH/dot"
 
 # Source function
