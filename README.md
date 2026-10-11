@@ -16,3 +16,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/nejuni/nix/0/enc.sh)
 - cf function is for confirming yes no type by gum
 - ds function is for displaying custom msg with spinner like echo
 
+## re
+```
+termux-restore /storage/emulated/0/Download/termux-pkg.tar && tar -xf /storage/emulated/0/Download/termux-backup.tar -C /data/data/com.termux/files
+```
